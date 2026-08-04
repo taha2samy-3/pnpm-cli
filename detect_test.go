@@ -1,11 +1,11 @@
-package yarn_test
+package pnpm_test
 
 import (
 	"os"
 	"testing"
 
 	"github.com/paketo-buildpacks/packit/v2"
-	"github.com/paketo-buildpacks/yarn"
+	"github.com/paketo-buildpacks/pnpm"
 	"github.com/sclevine/spec"
 
 	. "github.com/onsi/gomega"
@@ -24,14 +24,14 @@ func testDetect(t *testing.T, context spec.G, it spec.S) {
 		workingDir, err = os.MkdirTemp("", "working-dir")
 		Expect(err).NotTo(HaveOccurred())
 
-		detect = yarn.Detect()
+		detect = pnpm.Detect()
 	})
 
 	it.After(func() {
 		Expect(os.RemoveAll(workingDir)).To(Succeed())
 	})
 
-	it("provides yarn as a dependency", func() {
+	it("provides pnpm as a dependency", func() {
 		result, err := detect(packit.DetectContext{
 			WorkingDir: workingDir,
 		})
@@ -39,7 +39,7 @@ func testDetect(t *testing.T, context spec.G, it spec.S) {
 		Expect(result).To(Equal(packit.DetectResult{
 			Plan: packit.BuildPlan{
 				Provides: []packit.BuildPlanProvision{
-					{Name: "yarn"},
+					{Name: "pnpm"},
 				},
 			},
 		}))

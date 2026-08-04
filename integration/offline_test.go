@@ -53,7 +53,7 @@ func testOffline(t *testing.T, context spec.G, it spec.S) {
 			Expect(os.RemoveAll(source)).NotTo(HaveOccurred())
 		})
 
-		it("builds an oci image with yarn installed", func() {
+		it("builds an oci image with pnpm installed", func() {
 			var err error
 			source, err = occam.Source(filepath.Join("testdata", "default_app"))
 			Expect(err).NotTo(HaveOccurred())
@@ -64,7 +64,7 @@ func testOffline(t *testing.T, context spec.G, it spec.S) {
 					settings.Extensions.UbiNodejsExtension.Online,
 				).
 				WithBuildpacks(
-					settings.Buildpacks.Yarn.Offline,
+					settings.Buildpacks.PNPM.Offline,
 					settings.Buildpacks.BuildPlan.Online,
 				).
 				WithNetwork("none").
@@ -72,14 +72,14 @@ func testOffline(t *testing.T, context spec.G, it spec.S) {
 
 			Expect(err).NotTo(HaveOccurred(), logs.String())
 
-			container, err = docker.Container.Run.WithCommand("command -v yarn").Execute(image.ID)
+			container, err = docker.Container.Run.WithCommand("command -v pnpm").Execute(image.ID)
 			Expect(err).NotTo(HaveOccurred())
 
 			Eventually(func() string {
 				cLogs, err := docker.Container.Logs.Execute(container.ID)
 				Expect(err).NotTo(HaveOccurred())
 				return cLogs.String()
-			}).Should(ContainSubstring("yarn"))
+			}).Should(ContainSubstring("pnpm"))
 		})
 	})
 }

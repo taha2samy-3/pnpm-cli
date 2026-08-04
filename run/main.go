@@ -9,7 +9,7 @@ import (
 	"github.com/paketo-buildpacks/packit/v2/postal"
 	"github.com/paketo-buildpacks/packit/v2/sbom"
 	"github.com/paketo-buildpacks/packit/v2/scribe"
-	"github.com/paketo-buildpacks/yarn"
+	"github.com/paketo-buildpacks/pnpm"
 )
 
 type Generator struct{}
@@ -23,8 +23,8 @@ func main() {
 	logEmitter := scribe.NewEmitter(os.Stdout).WithLevel(os.Getenv("BP_LOG_LEVEL"))
 
 	packit.Run(
-		yarn.Detect(),
-		yarn.Build(
+		pnpm.Detect(),
+		pnpm.Build(
 			dependencyManager,
 			Generator{},
 			chronos.DefaultClock,

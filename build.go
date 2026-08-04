@@ -1,12 +1,10 @@
-package yarn
+package pnpm
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/paketo-buildpacks/packit/v2"
@@ -38,30 +36,21 @@ func Build(
 	return func(context packit.BuildContext) (packit.BuildResult, error) {
 		logger.Title("%s %s", context.BuildpackInfo.Name, context.BuildpackInfo.Version)
 
-		yarnLayer, err := context.Layers.Get(YarnLayerName)
+		pnpmLayer, err := context.Layers.Get(PNPMLayerName)
 		if err != nil {
 			return packit.BuildResult{}, err
 		}
 
 		planner := draft.NewPlanner()
-		entry, _ := planner.Resolve("yarn", context.Plan.Entries, nil)
+		entry, _ := planner.Resolve(PNPMDependency, context.Plan.Entries, nil)
 		version, ok := entry.Metadata["version"].(string)
 		if !ok {
 			version = "default"
 		}
 
-		// Determine whether the app uses Yarn Berry via the packageManager field
-		// in package.json (e.g. "yarn@4.x.x") or via BP_YARN_VERSION env var.
-		dependencyID := YarnDependency
-		if isBerry(context.WorkingDir, version) {
-			dependencyID = BerryDependency
-			// Reset version so the dependency constraint in buildpack.toml drives selection.
-			version = "default"
-		}
-
 		dependency, err := dependencyManager.Resolve(
 			filepath.Join(context.CNBPath, "buildpack.toml"),
-			dependencyID,
+			PNPMDependency,
 			version,
 			context.Stack)
 		if err != nil {
@@ -70,7 +59,7 @@ func Build(
 
 		bom := dependencyManager.GenerateBillOfMaterials(dependency)
 
-		launch, build := planner.MergeLayerTypes("yarn", context.Plan.Entries)
+		launch, build := planner.MergeLayerTypes(PNPMDependency, context.Plan.Entries)
 
 		var buildMetadata = packit.BuildMetadata{}
 		var launchMetadata = packit.LaunchMetadata{}
@@ -82,15 +71,15 @@ func Build(
 			launchMetadata = packit.LaunchMetadata{BOM: bom}
 		}
 
-		cachedSHA, ok := yarnLayer.Metadata[DependencyCacheKey].(string)
+		cachedSHA, ok := pnpmLayer.Metadata[DependencyCacheKey].(string)
 		if ok && postal.Checksum(dependency.Checksum).MatchString(cachedSHA) {
-			logger.Process("Reusing cached layer %s", yarnLayer.Path)
+			logger.Process("Reusing cached layer %s", pnpmLayer.Path)
 			logger.Break()
 
-			yarnLayer.Launch, yarnLayer.Build, yarnLayer.Cache = launch, build, build
+			pnpmLayer.Launch, pnpmLayer.Build, pnpmLayer.Cache = launch, build, build
 
 			return packit.BuildResult{
-				Layers: []packit.Layer{yarnLayer},
+				Layers: []packit.Layer{pnpmLayer},
 				Build:  buildMetadata,
 				Launch: launchMetadata,
 			}, nil
@@ -98,31 +87,20 @@ func Build(
 
 		logger.Process("Executing build process")
 
-		yarnLayer, err = yarnLayer.Reset()
+		pnpmLayer, err = pnpmLayer.Reset()
 		if err != nil {
 			return packit.BuildResult{}, err
 		}
 
-		yarnLayer.Launch, yarnLayer.Build, yarnLayer.Cache = launch, build, build
+		pnpmLayer.Launch, pnpmLayer.Build, pnpmLayer.Cache = launch, build, build
 
-		logger.Subprocess("Installing Yarn")
+		logger.Subprocess("Installing pnpm")
 
 		duration, err := clock.Measure(func() error {
-			return dependencyManager.Deliver(dependency, context.CNBPath, yarnLayer.Path, context.Platform.Path)
+			return dependencyManager.Deliver(dependency, context.CNBPath, pnpmLayer.Path, context.Platform.Path)
 		})
 		if err != nil {
 			return packit.BuildResult{}, err
-		}
-
-		// The @yarnpkg/cli-dist tarball ships bin/yarn as 0644; chmod it so it
-		// is executable on PATH. bin/yarn.js already has the correct 0755 mode.
-		if dependencyID == BerryDependency {
-			yarnShim := filepath.Join(yarnLayer.Path, "bin", "yarn")
-			if _, statErr := os.Stat(yarnShim); statErr == nil {
-				if err := os.Chmod(yarnShim, 0755); err != nil {
-					return packit.BuildResult{}, fmt.Errorf("failed to make berry yarn shim executable: %w", err)
-				}
-			}
 		}
 
 		logger.Action("Completed in %s", duration.Round(time.Millisecond))
@@ -134,13 +112,13 @@ func Build(
 		}
 
 		if sbomDisabled {
-			logger.Subprocess("Skipping SBOM generation for Yarn")
+			logger.Subprocess("Skipping SBOM generation for pnpm")
 			logger.Break()
 		} else {
-			logger.GeneratingSBOM(yarnLayer.Path)
+			logger.GeneratingSBOM(pnpmLayer.Path)
 			var sbomContent sbom.SBOM
 			duration, err = clock.Measure(func() error {
-				sbomContent, err = sbomGenerator.GenerateFromDependency(dependency, yarnLayer.Path)
+				sbomContent, err = sbomGenerator.GenerateFromDependency(dependency, pnpmLayer.Path)
 				return err
 			})
 			if err != nil {
@@ -151,19 +129,18 @@ func Build(
 			logger.Break()
 
 			logger.FormattingSBOM(context.BuildpackInfo.SBOMFormats...)
-			yarnLayer.SBOM, err = sbomContent.InFormats(context.BuildpackInfo.SBOMFormats...)
+			pnpmLayer.SBOM, err = sbomContent.InFormats(context.BuildpackInfo.SBOMFormats...)
 			if err != nil {
 				return packit.BuildResult{}, err
 			}
 		}
 
-		yarnLayer.Metadata = map[string]interface{}{
+		pnpmLayer.Metadata = map[string]interface{}{
 			DependencyCacheKey: dependency.Checksum,
-			"dependency-id":    dependencyID,
 		}
 
 		return packit.BuildResult{
-			Layers: []packit.Layer{yarnLayer},
+			Layers: []packit.Layer{pnpmLayer},
 			Build:  buildMetadata,
 			Launch: launchMetadata,
 		}, nil
@@ -179,46 +156,4 @@ func checkSbomDisabled() (bool, error) {
 		return disable, nil
 	}
 	return false, nil
-}
-
-// isBerry returns true when the app declares a packageManager field in
-// package.json that starts with "yarn@" and the major version is >= 2 (i.e.
-// Yarn Berry), or when the resolved build-plan version string is >= "2".
-func isBerry(workingDir, version string) bool {
-	// Explicit version constraint wins first.
-	if version != "" && version != "default" {
-		major := strings.SplitN(version, ".", 2)[0]
-		if major >= "2" {
-			return true
-		}
-	}
-
-	pm := readPackageManager(workingDir)
-	if strings.HasPrefix(pm, "yarn@") {
-		ver := strings.TrimPrefix(pm, "yarn@")
-		major := strings.SplitN(ver, ".", 2)[0]
-		if major >= "2" {
-			return true
-		}
-	}
-	return false
-}
-
-// readPackageManager reads the "packageManager" field from package.json in the
-// given directory. Returns an empty string if the file cannot be read or the
-// field is absent.
-func readPackageManager(workingDir string) string {
-	f, err := os.Open(filepath.Join(workingDir, "package.json"))
-	if err != nil {
-		return ""
-	}
-	defer func() { _ = f.Close() }()
-
-	var pkg struct {
-		PackageManager string `json:"packageManager"`
-	}
-	if err := json.NewDecoder(f).Decode(&pkg); err != nil {
-		return ""
-	}
-	return pkg.PackageManager
 }

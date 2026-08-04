@@ -1,4 +1,4 @@
-module github.com/paketo-buildpacks/yarn
+module github.com/paketo-buildpacks/pnpm
 
 go 1.26.5
 

@@ -20,7 +20,7 @@ var settings struct {
 		BuildPlan struct {
 			Online string
 		}
-		Yarn struct {
+		PNPM struct {
 			Online  string
 			Offline string
 		}
@@ -73,12 +73,12 @@ func TestIntegration(t *testing.T) {
 		Expect(err).ToNot(HaveOccurred())
 	}
 
-	settings.Buildpacks.Yarn.Online, err = buildpackStore.Get.
+	settings.Buildpacks.PNPM.Online, err = buildpackStore.Get.
 		WithVersion("1.2.3").
 		Execute(root)
 	Expect(err).NotTo(HaveOccurred())
 
-	settings.Buildpacks.Yarn.Offline, err = buildpackStore.Get.
+	settings.Buildpacks.PNPM.Offline, err = buildpackStore.Get.
 		WithOfflineDependencies().
 		WithVersion("1.2.3").
 		Execute(root)

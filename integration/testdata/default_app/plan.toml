@@ -1,5 +1,5 @@
 [[requires]]
-name = "yarn"
+name = "pnpm"
 
 [requires.metadata]
 launch = true

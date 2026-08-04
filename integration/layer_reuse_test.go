@@ -57,7 +57,7 @@ func testRebuildLayerReuse(t *testing.T, context spec.G, it spec.S) {
 		Expect(os.RemoveAll(source)).To(Succeed())
 	})
 
-	context("an app is rebuilt and yarn dependency is unchanged", func() {
+	context("an app is rebuilt and pnpm dependency is unchanged", func() {
 		it("reuses a layer from a previous build", func() {
 			var (
 				err         error
@@ -75,7 +75,7 @@ func testRebuildLayerReuse(t *testing.T, context spec.G, it spec.S) {
 				).
 				WithPullPolicy(pullPolicy).
 				WithBuildpacks(
-					settings.Buildpacks.Yarn.Online,
+					settings.Buildpacks.PNPM.Online,
 					settings.Buildpacks.BuildPlan.Online,
 				)
 
@@ -87,7 +87,7 @@ func testRebuildLayerReuse(t *testing.T, context spec.G, it spec.S) {
 			Expect(firstImage.Buildpacks).To(HaveLen(2))
 
 			Expect(firstImage.Buildpacks[0].Key).To(Equal(settings.Buildpack.ID))
-			Expect(firstImage.Buildpacks[0].Layers).To(HaveKey("yarn"))
+			Expect(firstImage.Buildpacks[0].Layers).To(HaveKey("pnpm"))
 
 			Expect(logs.String()).To(ContainSubstring("  Executing build process"))
 
@@ -100,12 +100,12 @@ func testRebuildLayerReuse(t *testing.T, context spec.G, it spec.S) {
 			Expect(secondImage.Buildpacks).To(HaveLen(2))
 
 			Expect(secondImage.Buildpacks[0].Key).To(Equal(settings.Buildpack.ID))
-			Expect(secondImage.Buildpacks[0].Layers).To(HaveKey("yarn"))
+			Expect(secondImage.Buildpacks[0].Layers).To(HaveKey("pnpm"))
 
 			Expect(logs.String()).NotTo(ContainSubstring("  Executing build process"))
-			Expect(logs.String()).To(ContainSubstring(fmt.Sprintf("  Reusing cached layer /layers/%s/yarn", strings.ReplaceAll(settings.Buildpack.ID, "/", "_"))))
+			Expect(logs.String()).To(ContainSubstring(fmt.Sprintf("  Reusing cached layer /layers/%s/pnpm", strings.ReplaceAll(settings.Buildpack.ID, "/", "_"))))
 
-			Expect(secondImage.Buildpacks[0].Layers["yarn"].SHA).To(Equal(firstImage.Buildpacks[0].Layers["yarn"].SHA))
+			Expect(secondImage.Buildpacks[0].Layers["pnpm"].SHA).To(Equal(firstImage.Buildpacks[0].Layers["pnpm"].SHA))
 		})
 	})
 }

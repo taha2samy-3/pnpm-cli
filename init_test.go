@@ -1,4 +1,4 @@
-package yarn_test
+package pnpm_test
 
 import (
 	"testing"
@@ -7,8 +7,8 @@ import (
 	"github.com/sclevine/spec/report"
 )
 
-func TestUnitYarn(t *testing.T) {
-	suite := spec.New("yarn", spec.Report(report.Terminal{}), spec.Parallel())
+func TestUnitPNPM(t *testing.T) {
+	suite := spec.New("pnpm", spec.Report(report.Terminal{}), spec.Parallel())
 	suite("Build", testBuild, spec.Sequential())
 	suite("Detect", testDetect)
 	suite.Run(t)

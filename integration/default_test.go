@@ -78,7 +78,7 @@ func testDefault(t *testing.T, context spec.G, it spec.S) {
 					settings.Extensions.UbiNodejsExtension.Online,
 				).
 				WithBuildpacks(
-					settings.Buildpacks.Yarn.Online,
+					settings.Buildpacks.PNPM.Online,
 					settings.Buildpacks.BuildPlan.Online,
 				).
 				WithSBOMOutputDir(sbomDir).
@@ -87,23 +87,23 @@ func testDefault(t *testing.T, context spec.G, it spec.S) {
 				Execute(name, source)
 			Expect(err).ToNot(HaveOccurred(), logs.String)
 
-			// Ensure yarn is installed correctly
-			container, err = docker.Container.Run.WithCommand("command -v yarn").Execute(image.ID)
+			// Ensure pnpm is installed correctly
+			container, err = docker.Container.Run.WithCommand("command -v pnpm").Execute(image.ID)
 			Expect(err).NotTo(HaveOccurred())
 
 			Eventually(func() string {
 				cLogs, err := docker.Container.Logs.Execute(container.ID)
 				Expect(err).NotTo(HaveOccurred())
 				return cLogs.String()
-			}).Should(ContainSubstring("yarn"))
+			}).Should(ContainSubstring("pnpm"))
 
 			Expect(logs).To(ContainLines(
 				MatchRegexp(fmt.Sprintf(`%s \d+\.\d+\.\d+`, settings.Buildpack.Name)),
 				"  Executing build process",
-				MatchRegexp(`    Installing Yarn`),
+				MatchRegexp(`    Installing pnpm`),
 				MatchRegexp(`      Completed in ([0-9]*(\.[0-9]*)?[a-z]+)+`),
 				"",
-				fmt.Sprintf("  Generating SBOM for /layers/%s/yarn", strings.ReplaceAll(settings.Buildpack.ID, "/", "_")),
+				fmt.Sprintf("  Generating SBOM for /layers/%s/pnpm", strings.ReplaceAll(settings.Buildpack.ID, "/", "_")),
 				MatchRegexp(`      Completed in \d+(\.?\d+)*`),
 				"",
 				"  Writing SBOM in the following format(s):",
@@ -114,15 +114,15 @@ func testDefault(t *testing.T, context spec.G, it spec.S) {
 			))
 
 			// check that all required SBOM files are present
-			Expect(filepath.Join(sbomDir, "sbom", "launch", strings.ReplaceAll(settings.Buildpack.ID, "/", "_"), "yarn", "sbom.cdx.json")).To(BeARegularFile())
-			Expect(filepath.Join(sbomDir, "sbom", "launch", strings.ReplaceAll(settings.Buildpack.ID, "/", "_"), "yarn", "sbom.spdx.json")).To(BeARegularFile())
-			Expect(filepath.Join(sbomDir, "sbom", "launch", strings.ReplaceAll(settings.Buildpack.ID, "/", "_"), "yarn", "sbom.syft.json")).To(BeARegularFile())
+			Expect(filepath.Join(sbomDir, "sbom", "launch", strings.ReplaceAll(settings.Buildpack.ID, "/", "_"), "pnpm", "sbom.cdx.json")).To(BeARegularFile())
+			Expect(filepath.Join(sbomDir, "sbom", "launch", strings.ReplaceAll(settings.Buildpack.ID, "/", "_"), "pnpm", "sbom.spdx.json")).To(BeARegularFile())
+			Expect(filepath.Join(sbomDir, "sbom", "launch", strings.ReplaceAll(settings.Buildpack.ID, "/", "_"), "pnpm", "sbom.syft.json")).To(BeARegularFile())
 
-			// check an SBOM file to make sure it has an entry for yarn
-			contents, err := os.ReadFile(filepath.Join(sbomDir, "sbom", "launch", strings.ReplaceAll(settings.Buildpack.ID, "/", "_"), "yarn", "sbom.cdx.json"))
+			// check an SBOM file to make sure it has an entry for pnpm
+			contents, err := os.ReadFile(filepath.Join(sbomDir, "sbom", "launch", strings.ReplaceAll(settings.Buildpack.ID, "/", "_"), "pnpm", "sbom.cdx.json"))
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(string(contents)).To(ContainSubstring(`"name": "Yarn"`))
+			Expect(string(contents)).To(ContainSubstring(`"name": "pnpm"`))
 		})
 	})
 
@@ -171,7 +171,7 @@ func testDefault(t *testing.T, context spec.G, it spec.S) {
 				).
 				WithPullPolicy(pullPolicy).
 				WithBuildpacks(
-					settings.Buildpacks.Yarn.Online,
+					settings.Buildpacks.PNPM.Online,
 					settings.Buildpacks.BuildPlan.Online).
 				WithSBOMOutputDir(sbomDir).
 				WithEnv(map[string]string{
@@ -181,29 +181,29 @@ func testDefault(t *testing.T, context spec.G, it spec.S) {
 				Execute(name, source)
 			Expect(err).ToNot(HaveOccurred(), logs.String)
 
-			// Ensure yarn is installed correctly
-			container, err = docker.Container.Run.WithCommand("command -v yarn").Execute(image.ID)
+			// Ensure pnpm is installed correctly
+			container, err = docker.Container.Run.WithCommand("command -v pnpm").Execute(image.ID)
 			Expect(err).NotTo(HaveOccurred())
 
 			Eventually(func() string {
 				cLogs, err := docker.Container.Logs.Execute(container.ID)
 				Expect(err).NotTo(HaveOccurred())
 				return cLogs.String()
-			}).Should(ContainSubstring("yarn"))
+			}).Should(ContainSubstring("pnpm"))
 
 			Expect(logs).To(ContainLines(
 				MatchRegexp(fmt.Sprintf(`%s \d+\.\d+\.\d+`, settings.Buildpack.Name)),
 				"  Executing build process",
-				MatchRegexp(`    Installing Yarn`),
+				MatchRegexp(`    Installing pnpm`),
 				MatchRegexp(`      Completed in ([0-9]*(\.[0-9]*)?[a-z]+)+`),
 				"",
-				"    Skipping SBOM generation for Yarn",
+				"    Skipping SBOM generation for pnpm",
 			))
 
 			// check that SBOM files were not generated
-			Expect(filepath.Join(sbomDir, "sbom", "launch", strings.ReplaceAll(settings.Buildpack.ID, "/", "_"), "yarn", "sbom.cdx.json")).ToNot(BeARegularFile())
-			Expect(filepath.Join(sbomDir, "sbom", "launch", strings.ReplaceAll(settings.Buildpack.ID, "/", "_"), "yarn", "sbom.spdx.json")).ToNot(BeARegularFile())
-			Expect(filepath.Join(sbomDir, "sbom", "launch", strings.ReplaceAll(settings.Buildpack.ID, "/", "_"), "yarn", "sbom.syft.json")).ToNot(BeARegularFile())
+			Expect(filepath.Join(sbomDir, "sbom", "launch", strings.ReplaceAll(settings.Buildpack.ID, "/", "_"), "pnpm", "sbom.cdx.json")).ToNot(BeARegularFile())
+			Expect(filepath.Join(sbomDir, "sbom", "launch", strings.ReplaceAll(settings.Buildpack.ID, "/", "_"), "pnpm", "sbom.spdx.json")).ToNot(BeARegularFile())
+			Expect(filepath.Join(sbomDir, "sbom", "launch", strings.ReplaceAll(settings.Buildpack.ID, "/", "_"), "pnpm", "sbom.syft.json")).ToNot(BeARegularFile())
 		})
 	})
 }
