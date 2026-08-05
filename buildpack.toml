@@ -12,7 +12,7 @@ api = "0.7"
     uri = "https://github.com/paketo-buildpacks/pnpm/blob/main/LICENSE"
 
 [metadata]
-  include-files = ["buildpack.toml", "bin/build", "bin/detect"]
+  include-files = ["buildpack.toml", "bin/build", "bin/detect", "bin/run"]
   [metadata.default_versions]
     pnpm = "9.*"
 

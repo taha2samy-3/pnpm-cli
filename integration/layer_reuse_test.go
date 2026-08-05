@@ -26,7 +26,7 @@ func testRebuildLayerReuse(t *testing.T, context spec.G, it spec.S) {
 		name   string
 		source string
 
-		pullPolicy = "never"
+		pullPolicy = "if-not-present"
 	)
 
 	it.Before(func() {
