@@ -31,7 +31,7 @@ func testDetect(t *testing.T, context spec.G, it spec.S) {
 		Expect(os.RemoveAll(workingDir)).To(Succeed())
 	})
 
-	it("provides pnpm as a dependency", func() {
+	it("provides pnpm and requires node", func() {
 		result, err := detect(packit.DetectContext{
 			WorkingDir: workingDir,
 		})
@@ -40,6 +40,12 @@ func testDetect(t *testing.T, context spec.G, it spec.S) {
 			Plan: packit.BuildPlan{
 				Provides: []packit.BuildPlanProvision{
 					{Name: "pnpm"},
+				},
+				// pnpm is a Node.js executable; the platform must provide `node`
+				// before this buildpack runs. Asserting this here prevents accidental
+				// removal of the requirement in future refactors.
+				Requires: []packit.BuildPlanRequirement{
+					{Name: "node"},
 				},
 			},
 		}))

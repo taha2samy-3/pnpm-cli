@@ -1,3 +1,13 @@
+// Package main is the pnpm dependency retrieval script.
+//
+// It queries the official npm registry for pnpm package metadata, downloads
+// each release tarball to compute its SHA-256 checksum, and writes a JSON
+// array of cargo.ConfigMetadataDependency structs to the output file specified
+// on the command line.
+//
+// Usage (driven by scripts/retrieve.sh or the dependency/Makefile):
+//
+//	retrieval <buildpack.toml-path> <output-file>
 package main
 
 import (
@@ -5,87 +15,278 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/Masterminds/semver/v3"
-	"github.com/ProtonMail/go-crypto/openpgp"
 	buildpackConfig "github.com/paketo-buildpacks/libdependency/buildpack_config"
 	"github.com/paketo-buildpacks/libdependency/retrieve"
-	"github.com/paketo-buildpacks/libdependency/upstream"
 	"github.com/paketo-buildpacks/libdependency/versionology"
 	"github.com/paketo-buildpacks/packit/v2/cargo"
 	"github.com/paketo-buildpacks/packit/v2/fs"
 )
 
-const (
-	yarnDependencyID  = "yarn"
-	berryDependencyID = "berry"
-	berryTagPrefix    = "@yarnpkg/cli/"
-)
+// pnpmDependencyID is the canonical ID used throughout the Paketo pnpm buildpack.
+const pnpmDependencyID = "pnpm"
 
-type Asset struct {
-	BrowserDownloadUrl string `json:"browser_download_url"`
+// npmRegistryURL is the full-metadata endpoint for pnpm on the npm registry.
+// Fetching this URL returns a JSON document containing every published version.
+const npmRegistryURL = "https://registry.npmjs.org/pnpm"
+
+// ── npm registry response types ──────────────────────────────────────────────
+
+// npmPackageMetadata is the top-level response from the npm registry for a
+// given package (i.e. https://registry.npmjs.org/<package>).
+type npmPackageMetadata struct {
+	// Versions maps each published version string to its full version metadata.
+	Versions map[string]npmVersionMetadata `json:"versions"`
 }
 
-type YarnMetadata struct {
-	SemverVersion *semver.Version
+// npmVersionMetadata holds the per-version data we care about.
+type npmVersionMetadata struct {
+	Version string `json:"version"`
+	License string `json:"license"`
+	Dist    struct {
+		Tarball string `json:"tarball"` // download URL for the .tgz
+		Shasum  string `json:"shasum"`  // SHA-1 hex (npm's canonical integrity value)
+	} `json:"dist"`
 }
 
-func (yarnMetadata YarnMetadata) Version() *semver.Version {
-	return yarnMetadata.SemverVersion
+// ── versionology adapter ──────────────────────────────────────────────────────
+
+// pnpmVersionFetcher wraps a semver.Version and satisfies the
+// versionology.VersionFetcher interface so it can be passed to
+// retrieve.GetNewVersionsForId.
+type pnpmVersionFetcher struct {
+	semverVersion *semver.Version
 }
+
+func (p pnpmVersionFetcher) Version() *semver.Version {
+	return p.semverVersion
+}
+
+// ── entry point ───────────────────────────────────────────────────────────────
 
 func main() {
 	buildpackTomlPath, output := retrieve.FetchArgs()
 	validate(buildpackTomlPath, output)
 
+	// Parse the buildpack.toml to discover configured targets (os/arch pairs).
 	config, err := buildpackConfig.ParseBuildpackToml(buildpackTomlPath)
 	if err != nil {
-		panic(err)
+		panic(fmt.Errorf("could not parse buildpack.toml: %w", err))
 	}
 
-	// Default to linux/amd64 if no targets are specified (mirrors NewMetadataWithPlatforms).
+	// Default to linux/amd64 when no explicit targets are configured.
 	if len(config.Targets) == 0 {
 		config.Targets = []cargo.ConfigTarget{{OS: "linux", Arch: "amd64"}}
 	}
 
+	// Fetch every published pnpm version from the npm registry.
+	allNpmVersions, err := getAllNpmVersions()
+	if err != nil {
+		panic(fmt.Errorf("could not fetch pnpm versions from npm: %w", err))
+	}
+
+	// Ask libdependency which versions are genuinely new (not yet in buildpack.toml).
+	newVersions, err := retrieve.GetNewVersionsForId(
+		pnpmDependencyID,
+		config,
+		func() (versionology.VersionFetcherArray, error) { return allNpmVersions, nil },
+	)
+	if err != nil {
+		panic(fmt.Errorf("could not determine new pnpm versions: %w", err))
+	}
+
+	// Build a ConfigMetadataDependency for every (new version × target) pair.
 	var allDependencies []versionology.Dependency
 
-	for _, job := range []struct {
-		id       string
-		versions retrieve.GetAllVersionsFunc
-		meta     retrieve.GenerateMetadataWithPlatformFunc
-	}{
-		{yarnDependencyID, getClassicVersions, generateClassicMetadata},
-		{berryDependencyID, getBerryVersions, generateBerryMetadata},
-	} {
-		newVersions, err := retrieve.GetNewVersionsForId(job.id, config, job.versions)
-		if err != nil {
-			panic(fmt.Errorf("could not get new versions for %s: %w", job.id, err))
-		}
-		for _, target := range config.Targets {
-			platform := retrieve.Platform{OS: target.OS, Arch: target.Arch}
-			allDependencies = append(allDependencies, retrieve.GenerateAllMetadataWithPlatform(newVersions, job.meta, platform)...)
-		}
+	for _, target := range config.Targets {
+		platform := retrieve.Platform{OS: target.OS, Arch: target.Arch}
+		deps := retrieve.GenerateAllMetadataWithPlatform(newVersions, generatePnpmMetadata, platform)
+		allDependencies = append(allDependencies, deps...)
 	}
 
+	// Serialise and write the result.
 	metadataJSON, err := json.Marshal(allDependencies)
 	if err != nil {
-		panic(fmt.Errorf("unable to marshal metadata JSON: %w", err))
+		panic(fmt.Errorf("unable to marshal dependency metadata to JSON: %w", err))
 	}
 	if err = os.WriteFile(output, metadataJSON, os.ModePerm); err != nil {
-		panic(fmt.Errorf("cannot write to %s: %w", output, err))
+		panic(fmt.Errorf("cannot write output to %s: %w", output, err))
 	}
-	fmt.Printf("Wrote metadata to %s\n", output)
+
+	fmt.Printf("Wrote %d dependencies to %s\n", len(allDependencies), output)
 }
 
-// validate function, is an exact copy of livedependency/retrieve/validate function
+// ── version enumeration ───────────────────────────────────────────────────────
+
+// getAllNpmVersions fetches the full pnpm metadata from the npm registry and
+// returns a VersionFetcherArray containing every published semver version.
+func getAllNpmVersions() (versionology.VersionFetcherArray, error) {
+	webClient := NewWebClient()
+
+	body, err := webClient.Get(npmRegistryURL)
+	if err != nil {
+		return nil, fmt.Errorf("could not GET %s: %w", npmRegistryURL, err)
+	}
+
+	var pkgMeta npmPackageMetadata
+	if err := json.Unmarshal(body, &pkgMeta); err != nil {
+		return nil, fmt.Errorf("could not unmarshal npm registry response: %w", err)
+	}
+
+	var versions versionology.VersionFetcherArray
+	for versionStr := range pkgMeta.Versions {
+		sv, err := semver.NewVersion(versionStr)
+		if err != nil {
+			// Skip non-semver tags (e.g. pre-release labels that do not parse cleanly).
+			continue
+		}
+		versions = append(versions, pnpmVersionFetcher{semverVersion: sv})
+	}
+
+	return versions, nil
+}
+
+// ── metadata generation ───────────────────────────────────────────────────────
+
+// generatePnpmMetadata is the retrieve.GenerateMetadataWithPlatformFunc called
+// by retrieve.GenerateAllMetadataWithPlatform for each (version, platform) pair.
+//
+// It:
+//  1. Fetches the specific version metadata from the npm registry.
+//  2. Downloads the tarball to a temp file.
+//  3. Verifies the SHA-1 checksum against npm's `dist.shasum`.
+//  4. Computes the SHA-256 checksum used by Paketo/packit.
+//  5. Builds and returns a cargo.ConfigMetadataDependency.
+func generatePnpmMetadata(
+	versionFetcher versionology.VersionFetcher,
+	platform retrieve.Platform,
+) ([]versionology.Dependency, error) {
+	version := versionFetcher.Version().String()
+	webClient := NewWebClient()
+
+	// ── 1. Fetch per-version metadata from the npm registry ──────────────────
+	versionMetaURL := fmt.Sprintf("%s/%s", npmRegistryURL, version)
+	body, err := webClient.Get(versionMetaURL)
+	if err != nil {
+		return nil, fmt.Errorf("could not fetch npm metadata for pnpm@%s: %w", version, err)
+	}
+
+	var meta npmVersionMetadata
+	if err := json.Unmarshal(body, &meta); err != nil {
+		return nil, fmt.Errorf("could not unmarshal npm metadata for pnpm@%s: %w", version, err)
+	}
+
+	if meta.Dist.Tarball == "" {
+		return nil, fmt.Errorf("npm registry returned no tarball URL for pnpm@%s", version)
+	}
+	if meta.Dist.Shasum == "" {
+		return nil, fmt.Errorf("npm registry returned no shasum for pnpm@%s", version)
+	}
+	license := meta.License
+	if license == "" {
+		license = "MIT" // pnpm has always been MIT; use as a safe fallback
+	}
+
+	// ── 2. Download the tarball ───────────────────────────────────────────────
+	tmpDir, err := os.MkdirTemp("", "pnpm-retrieve")
+	if err != nil {
+		return nil, fmt.Errorf("could not create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	tgzPath := filepath.Join(tmpDir, fmt.Sprintf("pnpm-%s.tgz", version))
+	if err = webClient.Download(meta.Dist.Tarball, tgzPath); err != nil {
+		return nil, fmt.Errorf("could not download pnpm@%s tarball: %w", version, err)
+	}
+
+	// ── 3. Verify SHA-1 integrity ─────────────────────────────────────────────
+	actualSHA1, err := fileSHA1(tgzPath)
+	if err != nil {
+		return nil, fmt.Errorf("could not compute SHA-1 for pnpm@%s: %w", version, err)
+	}
+	if actualSHA1 != meta.Dist.Shasum {
+		return nil, fmt.Errorf(
+			"SHA-1 mismatch for pnpm@%s: expected %s, got %s",
+			version, meta.Dist.Shasum, actualSHA1,
+		)
+	}
+
+	// ── 4. Compute SHA-256 (Paketo's preferred checksum algorithm) ────────────
+	sha256Hex, err := fileSHA256(tgzPath)
+	if err != nil {
+		return nil, fmt.Errorf("could not compute SHA-256 for pnpm@%s: %w", version, err)
+	}
+
+	// ── 5. Build the dependency struct ────────────────────────────────────────
+	dep := cargo.ConfigMetadataDependency{
+		Arch:            platform.Arch,
+		CPE:             fmt.Sprintf("cpe:2.3:a:pnpm:pnpm:%s:*:*:*:*:*:*:*", version),
+		Checksum:        fmt.Sprintf("sha256:%s", sha256Hex),
+		DeprecationDate: nil,
+		ID:              pnpmDependencyID,
+		Licenses:        []interface{}{license},
+		Name:            "pnpm",
+		OS:              platform.OS,
+		PURL:            retrieve.GeneratePURL(pnpmDependencyID, version, sha256Hex, meta.Dist.Tarball),
+		Source:          meta.Dist.Tarball,
+		SourceChecksum:  fmt.Sprintf("sha256:%s", sha256Hex),
+		StripComponents: 1,
+		Stacks:          []string{"io.buildpacks.stacks.bionic", "io.buildpacks.stacks.jammy", "*"},
+		URI:             meta.Dist.Tarball,
+		Version:         version,
+	}
+
+	return []versionology.Dependency{{
+		ConfigMetadataDependency: dep,
+		SemverVersion:            versionFetcher.Version(),
+	}}, nil
+}
+
+// ── file integrity helpers ────────────────────────────────────────────────────
+
+// fileSHA256 computes the hex-encoded SHA-256 checksum of the file at path.
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to open file for SHA-256: %w", err)
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err = io.Copy(h, f); err != nil {
+		return "", fmt.Errorf("failed to hash file for SHA-256: %w", err)
+	}
+
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+// fileSHA1 computes the hex-encoded SHA-1 checksum of the file at path.
+// npm uses SHA-1 in its `dist.shasum` field; we verify against it before
+// computing the SHA-256 checksum that Paketo stores in buildpack.toml.
+func fileSHA1(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to open file for SHA-1: %w", err)
+	}
+	defer f.Close()
+
+	h := sha1.New()
+	if _, err = io.Copy(h, f); err != nil {
+		return "", fmt.Errorf("failed to hash file for SHA-1: %w", err)
+	}
+
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// ── validation ────────────────────────────────────────────────────────────────
+
+// validate mirrors the check in libdependency/retrieve so callers get a clear
+// error if the arguments are wrong before any network I/O takes place.
 func validate(buildpackTomlPath, metadataFile string) {
 	if exists, err := fs.Exists(buildpackTomlPath); err != nil {
 		panic(err)
@@ -96,322 +297,4 @@ func validate(buildpackTomlPath, metadataFile string) {
 	if metadataFile == "" {
 		panic("metadataFile is required")
 	}
-}
-
-func generateClassicMetadata(versionFetcher versionology.VersionFetcher, platform retrieve.Platform) ([]versionology.Dependency, error) {
-	version := versionFetcher.Version().String()
-	tagName := "v" + version
-
-	releases, err := NewGithubClient(NewWebClient()).GetReleaseTags("yarnpkg", "yarn")
-	if err != nil {
-		return nil, fmt.Errorf("could not get releases: %w", err)
-	}
-
-	for _, release := range releases {
-		if release.TagName != tagName {
-			continue
-		}
-
-		dependency, err := createDependencyVersion(version, tagName, platform)
-		if err != nil {
-			return nil, fmt.Errorf("could not create yarn version: %w", err)
-		}
-
-		return []versionology.Dependency{{
-			ConfigMetadataDependency: dependency,
-			SemverVersion:            versionFetcher.Version(),
-		}}, nil
-	}
-
-	return nil, fmt.Errorf("could not find yarn version %s", version)
-}
-
-func generateBerryMetadata(versionFetcher versionology.VersionFetcher, platform retrieve.Platform) ([]versionology.Dependency, error) {
-	version := versionFetcher.Version().String()
-
-	dependency, err := createBerryDependencyVersion(version, platform)
-	if err != nil {
-		return nil, fmt.Errorf("could not create berry version: %w", err)
-	}
-
-	return []versionology.Dependency{{
-		ConfigMetadataDependency: dependency,
-		SemverVersion:            versionFetcher.Version(),
-	}}, nil
-}
-
-func getClassicVersions() (versionology.VersionFetcherArray, error) {
-	githubClient := NewGithubClient(NewWebClient())
-
-	classicReleases, err := githubClient.GetReleaseTags("yarnpkg", "yarn")
-	if err != nil {
-		return nil, fmt.Errorf("could not get classic releases: %w", err)
-	}
-
-	var versions []versionology.VersionFetcher
-	for _, release := range classicReleases {
-		versionTagName := strings.TrimPrefix(release.TagName, "v")
-		version, err := semver.NewVersion(versionTagName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse version: %w", err)
-		}
-		// Skip versions without usable release assets: <0.7.0 lack source/tags;
-		// 1.22.20 and 1.22.21 have no binaries.
-		if version.LessThan(semver.MustParse("0.7.0")) ||
-			version.Equal(semver.MustParse("1.22.20")) ||
-			version.Equal(semver.MustParse("1.22.21")) {
-			continue
-		}
-		versions = append(versions, YarnMetadata{version})
-	}
-
-	return versions, nil
-}
-
-func getBerryVersions() (versionology.VersionFetcherArray, error) {
-	githubClient := NewGithubClient(NewWebClient())
-
-	berryReleases, err := githubClient.GetReleaseTags("yarnpkg", "berry")
-	if err != nil {
-		return nil, fmt.Errorf("could not get berry releases: %w", err)
-	}
-
-	var versions []versionology.VersionFetcher
-	for _, release := range berryReleases {
-		versionStr := strings.TrimPrefix(release.TagName, berryTagPrefix)
-		version, err := semver.NewVersion(versionStr)
-		if err != nil {
-			continue
-		}
-		versions = append(versions, YarnMetadata{version})
-	}
-
-	return versions, nil
-}
-
-func createDependencyVersion(version, tagName string, platform retrieve.Platform) (cargo.ConfigMetadataDependency, error) {
-	webClient := NewWebClient()
-	githubClient := NewGithubClient(webClient)
-
-	yarnGPGKey, err := webClient.Get("https://dl.yarnpkg.com/debian/pubkey.gpg")
-	if err != nil {
-		return cargo.ConfigMetadataDependency{}, fmt.Errorf("could not get yarn GPG key: %w", err)
-	}
-
-	releaseAssetDir, err := os.MkdirTemp("", "yarn")
-	if err != nil {
-		return cargo.ConfigMetadataDependency{}, fmt.Errorf("failed to create temp directory: %w", err)
-	}
-	defer os.RemoveAll(releaseAssetDir)
-	releaseAssetPath := filepath.Join(releaseAssetDir, fmt.Sprintf("yarn-%s.tar.gz", tagName))
-
-	assetName := fmt.Sprintf("yarn-%s.tar.gz", tagName)
-	assetUrl, err := githubClient.DownloadReleaseAsset("yarnpkg", "yarn", tagName, assetName, releaseAssetPath)
-	if err != nil {
-		if errors.Is(err, AssetNotFound{AssetName: assetName}) {
-			return cargo.ConfigMetadataDependency{}, NoSourceCodeError{Version: version}
-		}
-		return cargo.ConfigMetadataDependency{}, fmt.Errorf("could not download asset url: %w", err)
-	}
-
-	assetContent, err := webClient.Get(assetUrl)
-	if err != nil {
-		return cargo.ConfigMetadataDependency{}, fmt.Errorf("could not get asset content from asset url: %w", err)
-	}
-
-	asset := Asset{}
-	err = json.Unmarshal(assetContent, &asset)
-	if err != nil {
-		return cargo.ConfigMetadataDependency{}, fmt.Errorf("could not unmarshal asset url content: %w", err)
-	}
-
-	assetName = fmt.Sprintf("yarn-%s.tar.gz.asc", tagName)
-	releaseAssetSignature, err := githubClient.GetReleaseAsset("yarnpkg", "yarn", tagName, assetName)
-	if err != nil {
-		return cargo.ConfigMetadataDependency{}, fmt.Errorf("could not get release artifact signature: %w", err)
-	}
-
-	err = verifyASC(string(releaseAssetSignature), releaseAssetPath, string(yarnGPGKey))
-	if err != nil {
-		return cargo.ConfigMetadataDependency{}, fmt.Errorf("release artifact signature verification failed: %w", err)
-	}
-
-	dependencySHA, err := getSHA256(releaseAssetPath)
-	if err != nil {
-		return cargo.ConfigMetadataDependency{}, fmt.Errorf("could not get SHA256: %w", err)
-	}
-
-	return cargo.ConfigMetadataDependency{
-		Arch:            platform.Arch,
-		CPE:             fmt.Sprintf("cpe:2.3:a:yarnpkg:yarn:%s:*:*:*:*:*:*:*", version),
-		Checksum:        fmt.Sprintf("sha256:%s", dependencySHA),
-		DeprecationDate: nil,
-		ID:              yarnDependencyID,
-		Licenses:        retrieve.LookupLicenses(asset.BrowserDownloadUrl, upstream.DefaultDecompress),
-		Name:            "Yarn",
-		OS:              platform.OS,
-		PURL:            retrieve.GeneratePURL(yarnDependencyID, version, dependencySHA, asset.BrowserDownloadUrl),
-		Source:          asset.BrowserDownloadUrl,
-		SourceChecksum:  fmt.Sprintf("sha256:%s", dependencySHA),
-		StripComponents: 1,
-		Stacks:          []string{"io.buildpacks.stacks.bionic", "io.buildpacks.stacks.jammy", "*"},
-		URI:             asset.BrowserDownloadUrl,
-		Version:         version,
-	}, nil
-}
-
-// createBerryDependencyVersion builds a ConfigMetadataDependency for a Berry version.
-// Downloads the @yarnpkg/cli-dist npm tarball which contains the ready-to-run
-// bin/yarn.js bundle (strip-components=1 places bin/ into the layer).
-func createBerryDependencyVersion(version string, platform retrieve.Platform) (cargo.ConfigMetadataDependency, error) {
-	webClient := NewWebClient()
-
-	downloadURL := fmt.Sprintf(
-		"https://registry.npmjs.org/@yarnpkg/cli-dist/-/cli-dist-%s.tgz",
-		version,
-	)
-
-	tempDir, err := os.MkdirTemp("", "berry")
-	if err != nil {
-		return cargo.ConfigMetadataDependency{}, fmt.Errorf("failed to create temp directory: %w", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	tgzPath := filepath.Join(tempDir, fmt.Sprintf("cli-dist-%s.tgz", version))
-	if err = webClient.Download(downloadURL, tgzPath); err != nil {
-		return cargo.ConfigMetadataDependency{}, fmt.Errorf("could not download Berry cli-dist: %w", err)
-	}
-
-	npmMeta, err := getNpmMetadata(webClient, version)
-	if err != nil {
-		return cargo.ConfigMetadataDependency{}, fmt.Errorf("could not get npm registry metadata: %w", err)
-	}
-	actualSHA1, err := getSHA1(tgzPath)
-	if err != nil {
-		return cargo.ConfigMetadataDependency{}, fmt.Errorf("could not compute SHA1: %w", err)
-	}
-	if actualSHA1 != npmMeta.Shasum {
-		return cargo.ConfigMetadataDependency{}, fmt.Errorf("SHA1 mismatch for cli-dist-%s.tgz: expected %s, got %s", version, npmMeta.Shasum, actualSHA1)
-	}
-
-	dependencySHA, err := getSHA256(tgzPath)
-	if err != nil {
-		return cargo.ConfigMetadataDependency{}, fmt.Errorf("could not compute SHA256: %w", err)
-	}
-
-	return cargo.ConfigMetadataDependency{
-		Arch:            platform.Arch,
-		CPE:             fmt.Sprintf("cpe:2.3:a:yarnpkg:yarn:%s:*:*:*:*:*:*:*", version),
-		Checksum:        fmt.Sprintf("sha256:%s", dependencySHA),
-		DeprecationDate: nil,
-		ID:              berryDependencyID,
-		Licenses:        []interface{}{npmMeta.License},
-		Name:            "Yarn Berry",
-		OS:              platform.OS,
-		PURL:            retrieve.GeneratePURL(berryDependencyID, version, dependencySHA, downloadURL),
-		Source:          downloadURL,
-		SourceChecksum:  fmt.Sprintf("sha256:%s", dependencySHA),
-		StripComponents: 1,
-		Stacks:          []string{"io.buildpacks.stacks.bionic", "io.buildpacks.stacks.jammy", "*"},
-		URI:             downloadURL,
-		Version:         version,
-	}, nil
-}
-
-func verifyASC(asc, path string, pgpKeys ...string) error {
-	if len(pgpKeys) == 0 {
-		return errors.New("no pgp keys provided")
-	}
-
-	file, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("could not open file: %w", err)
-	}
-	defer file.Close()
-
-	for _, pgpKey := range pgpKeys {
-		keyring, err := openpgp.ReadArmoredKeyRing(strings.NewReader(pgpKey))
-		if err != nil {
-			log.Printf("could not read armored key ring: %s", err.Error())
-			continue
-		}
-
-		_, err = openpgp.CheckArmoredDetachedSignature(keyring, file, strings.NewReader(asc), nil)
-		if err != nil {
-			log.Printf("failed to check signature: %s", err.Error())
-			continue
-		}
-		log.Printf("found valid pgp key")
-		return nil
-	}
-
-	return errors.New("no valid pgp keys provided")
-}
-
-func getSHA256(path string) (string, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return "nil", fmt.Errorf("failed to open file: %w", err)
-	}
-	defer file.Close()
-
-	hash := sha256.New()
-	_, err = io.Copy(hash, file)
-	if err != nil {
-		return "nil", fmt.Errorf("failed to calculate SHA256: %w", err)
-	}
-
-	return fmt.Sprintf("%x", hash.Sum(nil)), nil
-}
-
-func getSHA1(path string) (string, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return "", fmt.Errorf("failed to open file: %w", err)
-	}
-	defer file.Close()
-
-	hash := sha1.New()
-	_, err = io.Copy(hash, file)
-	if err != nil {
-		return "", fmt.Errorf("failed to calculate SHA1: %w", err)
-	}
-
-	return hex.EncodeToString(hash.Sum(nil)), nil
-}
-
-type npmMetadata struct {
-	Shasum  string
-	License string
-}
-
-// getNpmMetadata fetches shasum and license for a Berry version from the npm registry.
-// The cli-dist tarball has no LICENSE file, so license comes from package metadata.
-func getNpmMetadata(webClient WebClient, version string) (npmMetadata, error) {
-	registryURL := fmt.Sprintf("https://registry.npmjs.org/@yarnpkg/cli-dist/%s", version)
-	body, err := webClient.Get(registryURL)
-	if err != nil {
-		return npmMetadata{}, fmt.Errorf("could not fetch npm registry metadata: %w", err)
-	}
-
-	var metadata struct {
-		License string `json:"license"`
-		Dist    struct {
-			Shasum string `json:"shasum"`
-		} `json:"dist"`
-	}
-	if err := json.Unmarshal(body, &metadata); err != nil {
-		return npmMetadata{}, fmt.Errorf("could not parse npm registry metadata: %w", err)
-	}
-	if metadata.Dist.Shasum == "" {
-		return npmMetadata{}, fmt.Errorf("npm registry did not return a shasum for version %s", version)
-	}
-	if metadata.License == "" {
-		return npmMetadata{}, fmt.Errorf("npm registry did not return a license for version %s", version)
-	}
-
-	return npmMetadata{
-		Shasum:  metadata.Dist.Shasum,
-		License: metadata.License,
-	}, nil
 }

@@ -74,6 +74,15 @@ func testBuild(t *testing.T, context spec.G, it spec.S) {
 			},
 		}
 
+		// The fake Deliver does not actually extract a tarball, so we must write a
+		// package.json into the layer directory that parsePnpmEntryPoint() will find.
+		// We do this via a Stub so the file lands in the correct per-test layerPath.
+		dependencyManager.DeliverCall.Stub = func(_ postal.Dependency, _, layerPath, _ string) error {
+			// Write a realistic package.json with a `bin` map into the layer root.
+			pkgJSON := `{"name":"pnpm","version":"test","bin":{"pnpm":"dist/pnpm.cjs"}}`
+			return os.WriteFile(filepath.Join(layerPath, "package.json"), []byte(pkgJSON), 0644)
+		}
+
 		sbomGenerator = &fakes.SBOMGenerator{}
 		sbomGenerator.GenerateFromDependencyCall.Returns.SBOM = sbom.SBOM{}
 
@@ -210,6 +219,13 @@ func testBuild(t *testing.T, context spec.G, it spec.S) {
 		Expect(dependencyManager.DeliverCall.Receives.LayerPath).To(Equal(filepath.Join(layersDir, "pnpm")))
 		Expect(dependencyManager.DeliverCall.Receives.PlatformPath).To(Equal("platform"))
 
+		// Verify the shim was written and points to the entry declared in package.json.
+		shimPath := filepath.Join(layersDir, "pnpm", "bin", "pnpm")
+		shimBytes, err := os.ReadFile(shimPath)
+		Expect(err).NotTo(HaveOccurred())
+		expectedTarget := filepath.Join(layersDir, "pnpm", "dist", "pnpm.cjs")
+		Expect(string(shimBytes)).To(Equal("#!/bin/sh\nexec node " + expectedTarget + " \"$@\"\n"))
+
 		// Legacy SBOM
 		Expect(dependencyManager.GenerateBillOfMaterialsCall.Receives.Dependencies).To(Equal([]postal.Dependency{{
 			ID:       "pnpm",
@@ -303,12 +319,47 @@ func testBuild(t *testing.T, context spec.G, it spec.S) {
 
 		context("when the dependency cannot be installed", func() {
 			it.Before(func() {
+				dependencyManager.DeliverCall.Stub = nil
 				dependencyManager.DeliverCall.Returns.Error = errors.New("failed to install dependency")
 			})
 
 			it("returns an error", func() {
 				_, err := build(buildContext)
 				Expect(err).To(MatchError("failed to install dependency"))
+			})
+		})
+
+		context("when package.json is missing from the layer after delivery", func() {
+			it.Before(func() {
+				// Deliver succeeds but writes no package.json.
+				dependencyManager.DeliverCall.Stub = func(_ postal.Dependency, _, _ string, _ string) error {
+					return nil
+				}
+			})
+
+			it("returns a descriptive error", func() {
+				_, err := build(buildContext)
+				Expect(err).To(MatchError(ContainSubstring("could not determine pnpm entry point")))
+				Expect(err).To(MatchError(ContainSubstring("package.json")))
+			})
+		})
+
+		context("when package.json has no bin.pnpm entry", func() {
+			it.Before(func() {
+				dependencyManager.DeliverCall.Stub = func(_ postal.Dependency, _, layerPath string, _ string) error {
+					// Write a package.json that is valid JSON but lacks bin["pnpm"].
+					return os.WriteFile(
+						filepath.Join(layerPath, "package.json"),
+						[]byte(`{"name":"pnpm","bin":{"other":"dist/other.cjs"}}`),
+						0644,
+					)
+				}
+			})
+
+			it("returns a descriptive error", func() {
+				_, err := build(buildContext)
+				Expect(err).To(MatchError(ContainSubstring("could not determine pnpm entry point")))
+				Expect(err).To(MatchError(ContainSubstring("'pnpm' entry under 'bin'")))
 			})
 		})
 

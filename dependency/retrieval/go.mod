@@ -1,10 +1,9 @@
-module github.com/paketo-buildpacks/yarn/retrieval
+module github.com/paketo-buildpacks/pnpm/retrieval
 
 go 1.26.2
 
 require (
 	github.com/Masterminds/semver/v3 v3.4.0
-	github.com/ProtonMail/go-crypto v1.4.1
 	github.com/paketo-buildpacks/libdependency v0.2.1
 	github.com/paketo-buildpacks/packit/v2 v2.25.4
 )

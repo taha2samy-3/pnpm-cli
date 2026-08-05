@@ -1,6 +1,7 @@
 package pnpm
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,6 +26,47 @@ type DependencyManager interface {
 //go:generate faux --interface SBOMGenerator --output fakes/sbom_generator.go
 type SBOMGenerator interface {
 	GenerateFromDependency(dependency postal.Dependency, dir string) (sbom.SBOM, error)
+}
+
+// packageJSON is a minimal representation of the pnpm package.json used only
+// to resolve the `bin` field after tarball extraction.
+type packageJSON struct {
+	// Bin is the map of binary name → relative path declared in package.json.
+	// pnpm uses the map form, e.g. {"pnpm": "dist/pnpm.cjs"}.
+	Bin map[string]string `json:"bin"`
+}
+
+// parsePnpmEntryPoint reads <layerPath>/package.json and returns the absolute
+// path to the pnpm entry-point declared under `bin["pnpm"]`.
+//
+// Returning an explicit, descriptive error here ensures that if the pnpm
+// maintainers rename their entry file (e.g. pnpm.cjs → pnpm.mjs), the
+// buildpack fails with a clear message instead of a cryptic "command not
+// found" at container start-up.
+func parsePnpmEntryPoint(layerPath string) (string, error) {
+	pkgJSONPath := filepath.Join(layerPath, "package.json")
+
+	data, err := os.ReadFile(pkgJSONPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read package.json from pnpm layer (%s): %w", pkgJSONPath, err)
+	}
+
+	var pkg packageJSON
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return "", fmt.Errorf("failed to parse package.json at %s: %w", pkgJSONPath, err)
+	}
+
+	relEntry, ok := pkg.Bin["pnpm"]
+	if !ok || relEntry == "" {
+		return "", fmt.Errorf(
+			"package.json at %s does not declare a 'pnpm' entry under 'bin' (found: %v)",
+			pkgJSONPath, pkg.Bin,
+		)
+	}
+
+	// relEntry is relative to the package root (e.g. "dist/pnpm.cjs").
+	// Resolve it to an absolute path so the shim is unambiguous.
+	return filepath.Join(layerPath, relEntry), nil
 }
 
 func Build(
@@ -102,19 +144,29 @@ func Build(
 		if err != nil {
 			return packit.BuildResult{}, err
 		}
-		pnpmBinDir := filepath.Join(pnpmLayer.Path, "bin")
-		err = os.MkdirAll(pnpmBinDir, 0755)
+
+		// ── Dynamic shim creation ──────────────────────────────────────────────
+		// Instead of hardcoding "pnpm.cjs", we read the `bin["pnpm"]` field from
+		// the package.json that ships with the extracted tarball. This keeps the
+		// buildpack resilient to upstream entry-point renames (e.g. pnpm.mjs).
+		entryPoint, err := parsePnpmEntryPoint(pnpmLayer.Path)
 		if err != nil {
+			return packit.BuildResult{}, fmt.Errorf("could not determine pnpm entry point: %w", err)
+		}
+
+		pnpmBinDir := filepath.Join(pnpmLayer.Path, "bin")
+		if err = os.MkdirAll(pnpmBinDir, 0755); err != nil {
 			return packit.BuildResult{}, fmt.Errorf("failed to create bin dir: %w", err)
 		}
 
+		// The shim delegates to `node <entryPoint>` so the correct Node.js
+		// runtime (provided by an earlier buildpack layer) is always used.
+		shimContent := fmt.Sprintf("#!/bin/sh\nexec node %s \"$@\"\n", entryPoint)
 		pnpmBinPath := filepath.Join(pnpmBinDir, "pnpm")
-		shimContent := fmt.Sprintf("#!/bin/sh\nexec node %s \"$@\"\n", filepath.Join(pnpmBinDir, "pnpm.cjs"))
-		err = os.WriteFile(pnpmBinPath, []byte(shimContent), 0755)
-		if err != nil {
+		if err = os.WriteFile(pnpmBinPath, []byte(shimContent), 0755); err != nil {
 			return packit.BuildResult{}, fmt.Errorf("failed to write pnpm shim: %w", err)
 		}
-		// ====================================================================
+		// ──────────────────────────────────────────────────────────────────────
 
 		logger.Action("Completed in %s", duration.Round(time.Millisecond))
 		logger.Break()
