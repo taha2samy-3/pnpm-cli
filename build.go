@@ -102,6 +102,19 @@ func Build(
 		if err != nil {
 			return packit.BuildResult{}, err
 		}
+		pnpmBinDir := filepath.Join(pnpmLayer.Path, "bin")
+		err = os.MkdirAll(pnpmBinDir, 0755)
+		if err != nil {
+			return packit.BuildResult{}, fmt.Errorf("failed to create bin dir: %w", err)
+		}
+
+		pnpmBinPath := filepath.Join(pnpmBinDir, "pnpm")
+		shimContent := fmt.Sprintf("#!/bin/sh\nexec node %s \"$@\"\n", filepath.Join(pnpmBinDir, "pnpm.cjs"))
+		err = os.WriteFile(pnpmBinPath, []byte(shimContent), 0755)
+		if err != nil {
+			return packit.BuildResult{}, fmt.Errorf("failed to write pnpm shim: %w", err)
+		}
+		// ====================================================================
 
 		logger.Action("Completed in %s", duration.Round(time.Millisecond))
 		logger.Break()
