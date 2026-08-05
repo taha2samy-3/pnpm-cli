@@ -77,3 +77,19 @@ To run all integration tests, run:
 ```shell
 ./scripts/integration.sh
 ```
+
+
+## Version
+
+This buildpack currently supports the following versions of `pnpm`:
+
+| Version   | Default |
+|-----------|---------|
+| `8.15.9`  |         |
+| `9.1.0`   | ✅      |
+| `10.0.0`  |         |
+
+If no version is requested by a downstream buildpack (see [Integration](#integration)
+below), the default version above will be installed. The full, authoritative list of
+supported versions — along with their checksums and download sources — lives in
+[`buildpack.toml`](buildpack.toml).
