@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -22,7 +23,8 @@ func testDefault(t *testing.T, context spec.G, it spec.S) {
 		pack   occam.Pack
 		docker occam.Docker
 
-		pullPolicy = "never"
+		pullPolicy       = "never"
+		extenderBuildStr = ""
 	)
 
 	it.Before(func() {
@@ -31,6 +33,7 @@ func testDefault(t *testing.T, context spec.G, it spec.S) {
 
 		if settings.Extensions.UbiNodejsExtension.Online != "" {
 			pullPolicy = "always"
+			extenderBuildStr = "[extender (build)] "
 		}
 	})
 
@@ -59,9 +62,12 @@ func testDefault(t *testing.T, context spec.G, it spec.S) {
 		})
 
 		it.After(func() {
-			Expect(docker.Container.Remove.Execute(container.ID)).To(Succeed())
-
-			Expect(docker.Image.Remove.Execute(image.ID)).To(Succeed())
+			if container.ID != "" {
+				Expect(docker.Container.Remove.Execute(container.ID)).To(Succeed())
+			}
+			if image.ID != "" {
+				Expect(docker.Image.Remove.Execute(image.ID)).To(Succeed())
+			}
 			Expect(docker.Volume.Remove.Execute(occam.CacheVolumeNames(name))).To(Succeed())
 			Expect(os.RemoveAll(source)).To(Succeed())
 			Expect(os.RemoveAll(sbomDir)).To(Succeed())
@@ -87,7 +93,7 @@ func testDefault(t *testing.T, context spec.G, it spec.S) {
 				Execute(name, source)
 			Expect(err).ToNot(HaveOccurred(), logs.String)
 
-			// Ensure pnpm is installed correctly
+			// Ensure pnpm is installed correctly and present on PATH inside container
 			container, err = docker.Container.Run.WithCommand("command -v pnpm").Execute(image.ID)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -97,20 +103,23 @@ func testDefault(t *testing.T, context spec.G, it spec.S) {
 				return cLogs.String()
 			}).Should(ContainSubstring("pnpm"))
 
+			// QuoteMeta escapes special regex characters in extenderBuildStr (e.g. "[" and "]")
+			escapedExtender := regexp.QuoteMeta(extenderBuildStr)
+
 			Expect(logs).To(ContainLines(
-				MatchRegexp(fmt.Sprintf(`%s \d+\.\d+\.\d+`, settings.Buildpack.Name)),
-				"  Executing build process",
-				MatchRegexp(`    Installing pnpm`),
-				MatchRegexp(`      Completed in ([0-9]*(\.[0-9]*)?[a-z]+)+`),
-				"",
-				fmt.Sprintf("  Generating SBOM for /layers/%s/pnpm", strings.ReplaceAll(settings.Buildpack.ID, "/", "_")),
-				MatchRegexp(`      Completed in \d+(\.?\d+)*`),
-				"",
-				"  Writing SBOM in the following format(s):",
-				"    application/vnd.cyclonedx+json",
-				"    application/spdx+json",
-				"    application/vnd.syft+json",
-				"",
+				MatchRegexp(fmt.Sprintf(`%s%s \d+\.\d+\.\d+`, escapedExtender, settings.Buildpack.Name)),
+				extenderBuildStr+"  Executing build process",
+				MatchRegexp(fmt.Sprintf(`%s    Installing pnpm`, escapedExtender)),
+				MatchRegexp(fmt.Sprintf(`%s      Completed in ([0-9]*(\.[0-9]*)?[a-z]+)+`, escapedExtender)),
+				extenderBuildStr,
+				fmt.Sprintf("%s  Generating SBOM for /layers/%s/pnpm", extenderBuildStr, strings.ReplaceAll(settings.Buildpack.ID, "/", "_")),
+				MatchRegexp(fmt.Sprintf(`%s      Completed in \d+(\.?\d+)*`, escapedExtender)),
+				extenderBuildStr,
+				extenderBuildStr+"  Writing SBOM in the following format(s):",
+				extenderBuildStr+"    application/vnd.cyclonedx+json",
+				extenderBuildStr+"    application/spdx+json",
+				extenderBuildStr+"    application/vnd.syft+json",
+				extenderBuildStr,
 			))
 
 			// check that all required SBOM files are present
@@ -151,9 +160,12 @@ func testDefault(t *testing.T, context spec.G, it spec.S) {
 		})
 
 		it.After(func() {
-			Expect(docker.Container.Remove.Execute(container.ID)).To(Succeed())
-
-			Expect(docker.Image.Remove.Execute(image.ID)).To(Succeed())
+			if container.ID != "" {
+				Expect(docker.Container.Remove.Execute(container.ID)).To(Succeed())
+			}
+			if image.ID != "" {
+				Expect(docker.Image.Remove.Execute(image.ID)).To(Succeed())
+			}
 			Expect(docker.Volume.Remove.Execute(occam.CacheVolumeNames(name))).To(Succeed())
 			Expect(os.RemoveAll(source)).To(Succeed())
 			Expect(os.RemoveAll(sbomDir)).To(Succeed())
@@ -191,13 +203,15 @@ func testDefault(t *testing.T, context spec.G, it spec.S) {
 				return cLogs.String()
 			}).Should(ContainSubstring("pnpm"))
 
+			escapedExtender := regexp.QuoteMeta(extenderBuildStr)
+
 			Expect(logs).To(ContainLines(
-				MatchRegexp(fmt.Sprintf(`%s \d+\.\d+\.\d+`, settings.Buildpack.Name)),
-				"  Executing build process",
-				MatchRegexp(`    Installing pnpm`),
-				MatchRegexp(`      Completed in ([0-9]*(\.[0-9]*)?[a-z]+)+`),
-				"",
-				"    Skipping SBOM generation for pnpm",
+				MatchRegexp(fmt.Sprintf(`%s%s \d+\.\d+\.\d+`, escapedExtender, settings.Buildpack.Name)),
+				extenderBuildStr+"  Executing build process",
+				MatchRegexp(fmt.Sprintf(`%s    Installing pnpm`, escapedExtender)),
+				MatchRegexp(fmt.Sprintf(`%s      Completed in ([0-9]*(\.[0-9]*)?[a-z]+)+`, escapedExtender)),
+				extenderBuildStr,
+				extenderBuildStr+"    Skipping SBOM generation for pnpm",
 			))
 
 			// check that SBOM files were not generated
