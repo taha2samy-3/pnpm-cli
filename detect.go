@@ -13,6 +13,7 @@ import (
 	"github.com/paketo-buildpacks/packit/v2"
 )
 
+//go:embed dependencies.json
 var embeddedDependenciesJSON []byte
 
 // pnpmDependencyEntry represents the minimal version structure read from embedded JSON.
