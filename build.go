@@ -28,8 +28,13 @@ type SBOMGenerator interface {
 	GenerateFromDependency(dependency postal.Dependency, dir string) (sbom.SBOM, error)
 }
 
-// packageJSON is a minimal representation of the pnpm package.json used only
+// buildPackageJSON is a minimal representation of the pnpm package.json used only
 // to resolve the `bin` field after tarball extraction.
+type buildPackageJSON struct {
+	// Bin is the map of binary name → relative path declared in package.json.
+	// pnpm uses the map form, e.g. {"pnpm": "dist/pnpm.cjs"}.
+	Bin map[string]string `json:"bin"`
+}
 
 // parsePnpmEntryPoint reads <layerPath>/package.json and returns the absolute
 // path to the pnpm entry-point declared under `bin["pnpm"]`.
@@ -46,7 +51,7 @@ func parsePnpmEntryPoint(layerPath string) (string, error) {
 		return "", fmt.Errorf("failed to read package.json from pnpm layer (%s): %w", pkgJSONPath, err)
 	}
 
-	var pkg packageJSON
+	var pkg buildPackageJSON
 	if err := json.Unmarshal(data, &pkg); err != nil {
 		return "", fmt.Errorf("failed to parse package.json at %s: %w", pkgJSONPath, err)
 	}
@@ -83,6 +88,11 @@ func Build(
 		version, ok := entry.Metadata["version"].(string)
 		if !ok {
 			version = "default"
+		}
+
+		// Prioritize explicit build-time environment variable overrides (highest precedence)
+		if envVersion := os.Getenv("BP_PNPM_VERSION"); envVersion != "" {
+			version = envVersion
 		}
 
 		dependency, err := dependencyManager.Resolve(
