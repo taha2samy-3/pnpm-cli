@@ -13,7 +13,7 @@ api = "0.7"
 
 [metadata]
   include-files = ["buildpack.toml", "bin/build", "bin/detect", "bin/run"]
-  [metadata.default_versions]
+  [metadata.default-versions]
     pnpm = "9.*"
 
   [[metadata.dependencies]]
