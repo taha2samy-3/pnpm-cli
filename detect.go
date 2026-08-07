@@ -86,11 +86,12 @@ func Detect() packit.DetectFunc {
 				lockVersion := parseLockfileVersion(context.WorkingDir)
 				var mappedVersion string
 
-				if strings.HasPrefix(lockVersion, "6.") {
+				// Checks both exact versions (e.g. "6", "9", "10") and prefixed versions (e.g. "6.0", "9.0", "10.0")
+				if lockVersion == "6" || strings.HasPrefix(lockVersion, "6.") {
 					mappedVersion = "8.15.9" // lockfile v6.0 maps to pnpm v8
-				} else if strings.HasPrefix(lockVersion, "9.") {
+				} else if lockVersion == "9" || strings.HasPrefix(lockVersion, "9.") {
 					mappedVersion = "9.1.0" // lockfile v9.0 maps to pnpm v9
-				} else if strings.HasPrefix(lockVersion, "10.") {
+				} else if lockVersion == "10" || strings.HasPrefix(lockVersion, "10.") {
 					mappedVersion = "10.0.0" // lockfile v10.0 maps to pnpm v10
 				}
 
