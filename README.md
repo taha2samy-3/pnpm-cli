@@ -79,17 +79,26 @@ To run all integration tests, run:
 ```
 
 
-## Version
+## Version Selection
 
-This buildpack currently supports the following versions of `pnpm`:
+The buildpack resolves the requested `pnpm` version using the following order of precedence:
 
-| Version   | Default |
-|-----------|---------|
-| `8.15.9`  |         |
-| `9.1.0`   | ✅      |
-| `10.0.0`  |         |
+1. **Environment Variable Override**: If `BP_PNPM_VERSION` is set (e.g., `BP_PNPM_VERSION=10.0.0`), the buildpack will use this explicit version.
+2. **`package.json` configuration**: If not overridden by the environment variable, the buildpack inspects `package.json` for the `packageManager` field (e.g., `"packageManager": "pnpm@9.1.0"`).
+3. **Lockfile Auto-detection**: If no version is specified in the environment or `package.json`, the buildpack scans `pnpm-lock.yaml` to detect its `lockfileVersion` and maps it to a compatible version:
+   * Lockfile version `6` (or `6.*`) maps to `8.15.9`.
+   * Lockfile version `9` (or `9.*`) maps to `9.1.0`.
+   * Lockfile version `10` (or `10.*`) maps to `10.0.0`.
+4. **Default Fallback**: If none of the above are found, the buildpack defaults to the version specified under `metadata.default-versions` in `buildpack.toml` (currently configured to `9.*` which resolves to `9.1.0`).
 
-If no version is requested by a downstream buildpack (see [Integration](#integration)
-below), the default version above will be installed. The full, authoritative list of
-supported versions — along with their checksums and download sources — lives in
-[`buildpack.toml`](buildpack.toml).
+### Supported Versions
+
+This buildpack currently includes the following pre-packaged versions of `pnpm`:
+
+| Version  | Default | Supported Architecture | Supported OS |
+|----------|:-------:|------------------------|--------------|
+| `8.15.9` |         | `amd64` / `arm64`      | `linux`      |
+| `9.1.0`  |   ✅    | `amd64` / `arm64`      | `linux`      |
+| `10.0.0` |         | `amd64` / `arm64`      | `linux`      |
+
+If you need a version not listed above, and the buildpack is run in an **online** environment, it can query the npm registry to fetch newer versions dynamically if required by the build plan.
