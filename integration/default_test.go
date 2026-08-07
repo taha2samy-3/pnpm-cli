@@ -11,7 +11,6 @@ import (
 	"github.com/sclevine/spec"
 
 	. "github.com/onsi/gomega"
-	. "github.com/paketo-buildpacks/occam/matchers"
 )
 
 func testDefault(t *testing.T, context spec.G, it spec.S) {
