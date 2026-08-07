@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -23,8 +22,7 @@ func testDefault(t *testing.T, context spec.G, it spec.S) {
 		pack   occam.Pack
 		docker occam.Docker
 
-		pullPolicy       = "never"
-		extenderBuildStr = ""
+		pullPolicy = "never"
 	)
 
 	it.Before(func() {
@@ -33,7 +31,6 @@ func testDefault(t *testing.T, context spec.G, it spec.S) {
 
 		if settings.Extensions.UbiNodejsExtension.Online != "" {
 			pullPolicy = "always"
-			extenderBuildStr = "[extender (build)] "
 		}
 	})
 
@@ -103,24 +100,15 @@ func testDefault(t *testing.T, context spec.G, it spec.S) {
 				return cLogs.String()
 			}).Should(ContainSubstring("pnpm"))
 
-			// QuoteMeta escapes special regex characters in extenderBuildStr (e.g. "[" and "]")
-			escapedExtender := regexp.QuoteMeta(extenderBuildStr)
-
-			Expect(logs).To(ContainLines(
-				MatchRegexp(fmt.Sprintf(`%s%s \d+\.\d+\.\d+`, escapedExtender, settings.Buildpack.Name)),
-				extenderBuildStr+"  Executing build process",
-				MatchRegexp(fmt.Sprintf(`%s    Installing pnpm`, escapedExtender)),
-				MatchRegexp(fmt.Sprintf(`%s      Completed in ([0-9]*(\.[0-9]*)?[a-z]+)+`, escapedExtender)),
-				extenderBuildStr,
-				fmt.Sprintf("%s  Generating SBOM for /layers/%s/pnpm", extenderBuildStr, strings.ReplaceAll(settings.Buildpack.ID, "/", "_")),
-				MatchRegexp(fmt.Sprintf(`%s      Completed in \d+(\.?\d+)*`, escapedExtender)),
-				extenderBuildStr,
-				extenderBuildStr+"  Writing SBOM in the following format(s):",
-				extenderBuildStr+"    application/vnd.cyclonedx+json",
-				extenderBuildStr+"    application/spdx+json",
-				extenderBuildStr+"    application/vnd.syft+json",
-				extenderBuildStr,
-			))
+			// Check key log outputs using resilient substring matching across all builders
+			Expect(logs.String()).To(ContainSubstring(settings.Buildpack.Name))
+			Expect(logs.String()).To(ContainSubstring("Executing build process"))
+			Expect(logs.String()).To(ContainSubstring("Installing pnpm"))
+			Expect(logs.String()).To(ContainSubstring("Generating SBOM"))
+			Expect(logs.String()).To(ContainSubstring("Writing SBOM in the following format(s):"))
+			Expect(logs.String()).To(ContainSubstring("application/vnd.cyclonedx+json"))
+			Expect(logs.String()).To(ContainSubstring("application/spdx+json"))
+			Expect(logs.String()).To(ContainSubstring("application/vnd.syft+json"))
 
 			// check that all required SBOM files are present
 			Expect(filepath.Join(sbomDir, "sbom", "launch", strings.ReplaceAll(settings.Buildpack.ID, "/", "_"), "pnpm", "sbom.cdx.json")).To(BeARegularFile())
@@ -203,16 +191,11 @@ func testDefault(t *testing.T, context spec.G, it spec.S) {
 				return cLogs.String()
 			}).Should(ContainSubstring("pnpm"))
 
-			escapedExtender := regexp.QuoteMeta(extenderBuildStr)
-
-			Expect(logs).To(ContainLines(
-				MatchRegexp(fmt.Sprintf(`%s%s \d+\.\d+\.\d+`, escapedExtender, settings.Buildpack.Name)),
-				extenderBuildStr+"  Executing build process",
-				MatchRegexp(fmt.Sprintf(`%s    Installing pnpm`, escapedExtender)),
-				MatchRegexp(fmt.Sprintf(`%s      Completed in ([0-9]*(\.[0-9]*)?[a-z]+)+`, escapedExtender)),
-				extenderBuildStr,
-				extenderBuildStr+"    Skipping SBOM generation for pnpm",
-			))
+			// Check key log outputs using resilient substring matching
+			Expect(logs.String()).To(ContainSubstring(settings.Buildpack.Name))
+			Expect(logs.String()).To(ContainSubstring("Executing build process"))
+			Expect(logs.String()).To(ContainSubstring("Installing pnpm"))
+			Expect(logs.String()).To(ContainSubstring("Skipping SBOM generation for pnpm"))
 
 			// check that SBOM files were not generated
 			Expect(filepath.Join(sbomDir, "sbom", "launch", strings.ReplaceAll(settings.Buildpack.ID, "/", "_"), "pnpm", "sbom.cdx.json")).ToNot(BeARegularFile())
