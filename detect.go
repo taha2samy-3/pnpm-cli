@@ -12,7 +12,8 @@ import (
 // packageJSON represents the minimal structural subset of package.json
 // needed to extract package manager constraints during detection.
 type packageJSON struct {
-	PackageManager string `json:"packageManager"`
+	PackageManager string            `json:"packageManager"`
+	Bin            map[string]string `json:"bin"`
 }
 
 // Detect returns a packit.DetectFunc that advertises the provision of "pnpm".

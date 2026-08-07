@@ -30,11 +30,6 @@ type SBOMGenerator interface {
 
 // packageJSON is a minimal representation of the pnpm package.json used only
 // to resolve the `bin` field after tarball extraction.
-type packageJSON struct {
-	// Bin is the map of binary name → relative path declared in package.json.
-	// pnpm uses the map form, e.g. {"pnpm": "dist/pnpm.cjs"}.
-	Bin map[string]string `json:"bin"`
-}
 
 // parsePnpmEntryPoint reads <layerPath>/package.json and returns the absolute
 // path to the pnpm entry-point declared under `bin["pnpm"]`.
