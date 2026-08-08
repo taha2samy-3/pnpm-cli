@@ -26,8 +26,7 @@ func testOffline(t *testing.T, context spec.G, it spec.S) {
 	})
 
 	context("when offline", func() {
-		//UBI does not support offline installation at the moment,
-		//so we are skipping it.
+		// UBI does not support offline installation at the moment, so we skip it
 		if settings.Extensions.UbiNodejsExtension.Online != "" {
 			return
 		}
@@ -47,8 +46,12 @@ func testOffline(t *testing.T, context spec.G, it spec.S) {
 		})
 
 		it.After(func() {
-			Expect(docker.Container.Remove.Execute(container.ID)).To(Succeed())
-			Expect(docker.Image.Remove.Execute(image.ID)).To(Succeed())
+			if container.ID != "" {
+				Expect(docker.Container.Remove.Execute(container.ID)).To(Succeed())
+			}
+			if image.ID != "" {
+				Expect(docker.Image.Remove.Execute(image.ID)).To(Succeed())
+			}
 			Expect(docker.Volume.Remove.Execute(occam.CacheVolumeNames(name))).To(Succeed())
 			Expect(os.RemoveAll(source)).NotTo(HaveOccurred())
 		})

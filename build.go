@@ -19,7 +19,7 @@ import (
 	"github.com/paketo-buildpacks/packit/v2/scribe"
 )
 
-// jsonDependency represents the full dependency metadata structure in embedded JSON.
+// jsonDependency represents the structural metadata for each pre-packaged pnpm dependency entry embedded in JSON.
 type jsonDependency struct {
 	ID              string   `json:"id"`
 	Name            string   `json:"name"`
@@ -36,6 +36,7 @@ type jsonDependency struct {
 	Arch            string   `json:"arch"`
 }
 
+// DependencyManager defines the interface for resolving and delivering dependencies as well as generating Bill of Materials (BOM).
 //go:generate faux --interface DependencyManager --output fakes/dependency_manager.go
 type DependencyManager interface {
 	Resolve(path, id, version, stack string) (postal.Dependency, error)
@@ -43,17 +44,18 @@ type DependencyManager interface {
 	GenerateBillOfMaterials(dependencies ...postal.Dependency) []packit.BOMEntry
 }
 
+// SBOMGenerator defines the interface for generating Software Bill of Materials (SBOM) documents for installed dependencies.
 //go:generate faux --interface SBOMGenerator --output fakes/sbom_generator.go
 type SBOMGenerator interface {
 	GenerateFromDependency(dependency postal.Dependency, dir string) (sbom.SBOM, error)
 }
 
-// buildPackageJSON is a minimal representation of the pnpm package.json.
+// buildPackageJSON models the minimal structural subset of pnpm's package.json to discover the CLI entry point.
 type buildPackageJSON struct {
 	Bin map[string]string `json:"bin"`
 }
 
-// parsePnpmEntryPoint reads <layerPath>/package.json and returns the absolute path to pnpm entry-point.
+// parsePnpmEntryPoint inspects package.json in the layer directory to locate the relative path to the pnpm executable entry script.
 func parsePnpmEntryPoint(layerPath string) (string, error) {
 	pkgJSONPath := filepath.Join(layerPath, "package.json")
 
@@ -78,7 +80,7 @@ func parsePnpmEntryPoint(layerPath string) (string, error) {
 	return filepath.Join(layerPath, relEntry), nil
 }
 
-// convertToPostalDependency converts our embedded jsonDependency struct into postal.Dependency.
+// convertToPostalDependency maps our internal jsonDependency structure into a standard postal.Dependency struct.
 func convertToPostalDependency(dep jsonDependency) postal.Dependency {
 	stacks := dep.Stacks
 	if len(stacks) == 0 {
@@ -103,7 +105,7 @@ func convertToPostalDependency(dep jsonDependency) postal.Dependency {
 	}
 }
 
-// resolveEmbeddedDependency uses the package-level embeddedDependenciesJSON (declared in detect.go).
+// resolveEmbeddedDependency evaluates the requested pnpm version against embedded JSON entries matching target architecture and OS.
 func resolveEmbeddedDependency(requestedVersion, targetArch, targetOS string) (postal.Dependency, error) {
 	var jsonDeps []jsonDependency
 	if err := json.Unmarshal(embeddedDependenciesJSON, &jsonDeps); err != nil {
@@ -113,8 +115,8 @@ func resolveEmbeddedDependency(requestedVersion, targetArch, targetOS string) (p
 	var validVersions []*semver.Version
 	depMap := make(map[string]jsonDependency)
 
+	// Filter dependencies by target architecture and OS compatibility
 	for _, dep := range jsonDeps {
-		// Filter by architecture and OS match
 		if (dep.Arch == "" || dep.Arch == targetArch) && (dep.OS == "" || dep.OS == targetOS) {
 			if sv, err := semver.NewVersion(dep.Version); err == nil {
 				validVersions = append(validVersions, sv)
@@ -131,12 +133,25 @@ func resolveEmbeddedDependency(requestedVersion, targetArch, targetOS string) (p
 	cleanReq := strings.TrimPrefix(requestedVersion, "pnpm@")
 	cleanReq = strings.TrimSpace(cleanReq)
 
-	// 1. Direct Match Check
+	// Default or wildcard requested version -> select highest available version
+	if cleanReq == "default" || cleanReq == "" || cleanReq == "*" {
+		var absoluteLatest *semver.Version
+		for _, sv := range validVersions {
+			if absoluteLatest == nil || sv.GreaterThan(absoluteLatest) {
+				absoluteLatest = sv
+			}
+		}
+		if absoluteLatest != nil {
+			return convertToPostalDependency(depMap[absoluteLatest.String()]), nil
+		}
+	}
+
+	// 1. Check for exact version match
 	if dep, ok := depMap[cleanReq]; ok {
 		return convertToPostalDependency(dep), nil
 	}
 
-	// 2. Semver Match / Highest in Major Family
+	// 2. Check for semver major family match (e.g. "10" -> highest 10.x.x)
 	if reqSv, err := semver.NewVersion(cleanReq); err == nil {
 		var bestInMajor *semver.Version
 		for _, sv := range validVersions {
@@ -151,12 +166,8 @@ func resolveEmbeddedDependency(requestedVersion, targetArch, targetOS string) (p
 		}
 	}
 
-	// 3. Range or Default Constraint Match (e.g. "9.*", "default")
-	reqConstraint := cleanReq
-	if cleanReq == "default" || cleanReq == "" {
-		reqConstraint = "*"
-	}
-	if constraint, err := semver.NewConstraint(reqConstraint); err == nil {
+	// 3. Evaluate semver range constraints (e.g. ">=10.0.0", "11.*")
+	if constraint, err := semver.NewConstraint(cleanReq); err == nil {
 		var bestConstraintMatch *semver.Version
 		for _, sv := range validVersions {
 			if constraint.Check(sv) {
@@ -170,20 +181,10 @@ func resolveEmbeddedDependency(requestedVersion, targetArch, targetOS string) (p
 		}
 	}
 
-	// 4. Absolute Latest Version Fallback
-	var absoluteLatest *semver.Version
-	for _, sv := range validVersions {
-		if absoluteLatest == nil || sv.GreaterThan(absoluteLatest) {
-			absoluteLatest = sv
-		}
-	}
-	if absoluteLatest != nil {
-		return convertToPostalDependency(depMap[absoluteLatest.String()]), nil
-	}
-
 	return postal.Dependency{}, fmt.Errorf("could not resolve pnpm dependency for requested version '%s'", requestedVersion)
 }
 
+// Build constructs a packit.BuildFunc that handles layer setup, dependency delivery, shim creation, and SBOM generation.
 func Build(
 	dependencyManager DependencyManager,
 	sbomGenerator SBOMGenerator,
@@ -193,11 +194,13 @@ func Build(
 	return func(context packit.BuildContext) (packit.BuildResult, error) {
 		logger.Title("%s %s", context.BuildpackInfo.Name, context.BuildpackInfo.Version)
 
+		// Retrieve or initialize the pnpm layer
 		pnpmLayer, err := context.Layers.Get(PNPMLayerName)
 		if err != nil {
 			return packit.BuildResult{}, err
 		}
 
+		// Resolve required version from buildplan entries
 		planner := draft.NewPlanner()
 		entry, _ := planner.Resolve(PNPMDependency, context.Plan.Entries, nil)
 		version, ok := entry.Metadata["version"].(string)
@@ -210,7 +213,7 @@ func Build(
 			version = envVersion
 		}
 
-		// Target Arch and OS Resolution
+		// Resolve target Architecture and OS
 		targetArch := context.TargetInfo.Arch
 		if targetArch == "" {
 			targetArch = "amd64"
@@ -220,20 +223,21 @@ func Build(
 			targetOS = "linux"
 		}
 
-		// Resolve dependency directly from embedded JSON metadata (declared in detect.go)
-		dependency, err := resolveEmbeddedDependency(version, targetArch, targetOS)
+		// Priority 1: Resolve via dependencyManager using buildpack.toml (ensures offline packaging & caching compatibility)
+		dependency, err := dependencyManager.Resolve(
+			filepath.Join(context.CNBPath, "buildpack.toml"),
+			PNPMDependency,
+			version,
+			context.Stack)
 		if err != nil {
-			// Fallback attempt via dependencyManager in case buildpack.toml has entries
-			dependency, err = dependencyManager.Resolve(
-				filepath.Join(context.CNBPath, "buildpack.toml"),
-				PNPMDependency,
-				version,
-				context.Stack)
+			// Priority 2: Fall back to resolution directly from embedded JSON metadata
+			dependency, err = resolveEmbeddedDependency(version, targetArch, targetOS)
 			if err != nil {
 				return packit.BuildResult{}, fmt.Errorf("failed to resolve pnpm dependency: %w", err)
 			}
 		}
 
+		// Generate legacy Bill of Materials (BOM) entries
 		bom := dependencyManager.GenerateBillOfMaterials(dependency)
 
 		launch, build := planner.MergeLayerTypes(PNPMDependency, context.Plan.Entries)
@@ -248,6 +252,7 @@ func Build(
 			launchMetadata = packit.LaunchMetadata{BOM: bom}
 		}
 
+		// Layer caching check using checksum comparison
 		cachedSHA, ok := pnpmLayer.Metadata[DependencyCacheKey].(string)
 		if ok && postal.Checksum(dependency.Checksum).MatchString(cachedSHA) {
 			logger.Process("Reusing cached layer %s", pnpmLayer.Path)
@@ -264,6 +269,7 @@ func Build(
 
 		logger.Process("Executing build process")
 
+		// Reset layer state for clean installation
 		pnpmLayer, err = pnpmLayer.Reset()
 		if err != nil {
 			return packit.BuildResult{}, err
@@ -273,6 +279,7 @@ func Build(
 
 		logger.Subprocess("Installing pnpm %s", dependency.Version)
 
+		// Deliver dependency package tarball into the layer directory
 		duration, err := clock.Measure(func() error {
 			return dependencyManager.Deliver(dependency, context.CNBPath, pnpmLayer.Path, context.Platform.Path)
 		})
@@ -280,7 +287,7 @@ func Build(
 			return packit.BuildResult{}, err
 		}
 
-		// ── Dynamic shim creation ──────────────────────────────────────────────
+		// Discover entry point and create executable shell shim inside bin/pnpm
 		entryPoint, err := parsePnpmEntryPoint(pnpmLayer.Path)
 		if err != nil {
 			return packit.BuildResult{}, fmt.Errorf("could not determine pnpm entry point: %w", err)
@@ -296,11 +303,11 @@ func Build(
 		if err = os.WriteFile(pnpmBinPath, []byte(shimContent), 0755); err != nil {
 			return packit.BuildResult{}, fmt.Errorf("failed to write pnpm shim: %w", err)
 		}
-		// ──────────────────────────────────────────────────────────────────────
 
 		logger.Action("Completed in %s", duration.Round(time.Millisecond))
 		logger.Break()
 
+		// Handle Software Bill of Materials (SBOM) generation
 		sbomDisabled, err := checkSbomDisabled()
 		if err != nil {
 			return packit.BuildResult{}, err
@@ -330,6 +337,7 @@ func Build(
 			}
 		}
 
+		// Cache layer checksum metadata
 		pnpmLayer.Metadata = map[string]interface{}{
 			DependencyCacheKey: dependency.Checksum,
 		}
@@ -342,6 +350,7 @@ func Build(
 	}
 }
 
+// checkSbomDisabled inspects the BP_DISABLE_SBOM environment variable to determine if SBOM generation should be bypassed.
 func checkSbomDisabled() (bool, error) {
 	if disableStr, ok := os.LookupEnv("BP_DISABLE_SBOM"); ok {
 		disable, err := strconv.ParseBool(disableStr)

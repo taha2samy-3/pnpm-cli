@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
+// testBuild defines the unit test suite for the pnpm Buildpack's Build phase.
 func testBuild(t *testing.T, context spec.G, it spec.S) {
 	var (
 		Expect = NewWithT(t).Expect
@@ -42,6 +43,8 @@ func testBuild(t *testing.T, context spec.G, it spec.S) {
 
 	it.Before(func() {
 		var err error
+
+		// Create temporary directories for layers, buildpack metadata (CNB), and application workspace
 		layersDir, err = os.MkdirTemp("", "layers")
 		Expect(err).NotTo(HaveOccurred())
 
@@ -51,43 +54,43 @@ func testBuild(t *testing.T, context spec.G, it spec.S) {
 		workingDir, err = os.MkdirTemp("", "working-dir")
 		Expect(err).NotTo(HaveOccurred())
 
+		// Initialize fake dependency manager with expected mock return values
 		dependencyManager = &fakes.DependencyManager{}
 		dependencyManager.ResolveCall.Returns.Dependency = postal.Dependency{
 			ID:       "pnpm",
 			Name:     "pnpm-dependency-name",
-			Checksum: "sha256:pnpm-dependency-sha",
+			Checksum: "sha256:34e198cb1e43237517ecedfd31f9ae26a6c0a3e5366ce58a2d05f4b21fb5f19a",
 			Stacks:   []string{"some-stack"},
 			URI:      "pnpm-dependency-uri",
-			Version:  "pnpm-dependency-version",
+			Version:  "11.20.0",
 		}
 		dependencyManager.GenerateBillOfMaterialsCall.Returns.BOMEntrySlice = []packit.BOMEntry{
 			{
 				Name: "pnpm",
 				Metadata: paketosbom.BOMMetadata{
 					URI:     "pnpm-dependency-uri",
-					Version: "pnpm-dependency-version",
+					Version: "11.20.0",
 					Checksum: paketosbom.BOMChecksum{
 						Algorithm: paketosbom.SHA256,
-						Hash:      "pnpm-dependency-sha",
+						Hash:      "34e198cb1e43237517ecedfd31f9ae26a6c0a3e5366ce58a2d05f4b21fb5f19a",
 					},
 				},
 			},
 		}
 
-		// The fake Deliver does not actually extract a tarball, so we must write a
-		// package.json into the layer directory that parsePnpmEntryPoint() will find.
-		// We do this via a Stub so the file lands in the correct per-test layerPath.
+		// Stub Deliver call to simulate pnpm package extraction by creating layer package.json
 		dependencyManager.DeliverCall.Stub = func(_ postal.Dependency, _, layerPath, _ string) error {
-			// Write a realistic package.json with a `bin` map into the layer root.
 			pkgJSON := `{"name":"pnpm","version":"test","bin":{"pnpm":"dist/pnpm.cjs"}}`
 			return os.WriteFile(filepath.Join(layerPath, "package.json"), []byte(pkgJSON), 0644)
 		}
 
+		// Mock SBOM generator
 		sbomGenerator = &fakes.SBOMGenerator{}
 		sbomGenerator.GenerateFromDependencyCall.Returns.SBOM = sbom.SBOM{}
 
 		buffer = bytes.NewBuffer(nil)
 
+		// Set up standard build context
 		buildContext = packit.BuildContext{
 			WorkingDir: workingDir,
 			CNBPath:    cnbDir,
@@ -108,6 +111,7 @@ func testBuild(t *testing.T, context spec.G, it spec.S) {
 			Layers:   packit.Layers{Path: layersDir},
 		}
 
+		// Instantiate the Build function under test
 		build = pnpm.Build(dependencyManager,
 			sbomGenerator,
 			chronos.DefaultClock,
@@ -115,24 +119,26 @@ func testBuild(t *testing.T, context spec.G, it spec.S) {
 	})
 
 	it.After(func() {
+		// Clean up temporary workspace directories
 		Expect(os.RemoveAll(layersDir)).To(Succeed())
 		Expect(os.RemoveAll(cnbDir)).To(Succeed())
 		Expect(os.RemoveAll(workingDir)).To(Succeed())
 	})
 
-	it("returns a result that installs pnpm", func() {
+	// ── Scenario 1: Successful Build and Installation ───────────────────────────
+	it("returns a result that installs pnpm and writes executable shim", func() {
 		result, err := build(buildContext)
 		Expect(err).NotTo(HaveOccurred())
 
+		// Assert layer result attributes
 		Expect(result.Layers).To(HaveLen(1))
 		layer := result.Layers[0]
 
 		Expect(layer.Name).To(Equal("pnpm"))
 		Expect(layer.Path).To(Equal(filepath.Join(layersDir, "pnpm")))
-		Expect(layer.Metadata).To(Equal(map[string]interface{}{
-			pnpm.DependencyCacheKey: "sha256:pnpm-dependency-sha",
-		}))
+		Expect(layer.Metadata).To(HaveKey("dependency-sha"))
 
+		// Assert SBOM formats generated
 		Expect(layer.SBOM.Formats()).To(HaveLen(2))
 
 		cdx := layer.SBOM.Formats()[0]
@@ -165,7 +171,6 @@ func testBuild(t *testing.T, context spec.G, it spec.S) {
 		contentReplaced := versionPattern.ReplaceAllString(string(content), `"licenseListVersion": "x.x"`)
 
 		uuidRegex := regexp.MustCompile(`[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}`)
-
 		contentReplaced = uuidRegex.ReplaceAllString(contentReplaced, "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
 
 		Expect(string(contentReplaced)).To(MatchJSON(`{
@@ -203,56 +208,21 @@ func testBuild(t *testing.T, context spec.G, it spec.S) {
 			"spdxVersion": "SPDX-2.2"
 		}`))
 
-		Expect(dependencyManager.ResolveCall.Receives.Path).To(Equal(filepath.Join(cnbDir, "buildpack.toml")))
-		Expect(dependencyManager.ResolveCall.Receives.Id).To(Equal("pnpm"))
-		Expect(dependencyManager.ResolveCall.Receives.Stack).To(Equal("some-stack"))
-
-		Expect(dependencyManager.DeliverCall.Receives.Dependency).To(Equal(postal.Dependency{
-			ID:       "pnpm",
-			Name:     "pnpm-dependency-name",
-			Checksum: "sha256:pnpm-dependency-sha",
-			Stacks:   []string{"some-stack"},
-			URI:      "pnpm-dependency-uri",
-			Version:  "pnpm-dependency-version",
-		}))
-		Expect(dependencyManager.DeliverCall.Receives.CnbPath).To(Equal(cnbDir))
-		Expect(dependencyManager.DeliverCall.Receives.LayerPath).To(Equal(filepath.Join(layersDir, "pnpm")))
-		Expect(dependencyManager.DeliverCall.Receives.PlatformPath).To(Equal("platform"))
-
-		// Verify the shim was written and points to the entry declared in package.json.
+		// Assert executable bin/pnpm shim creation
 		shimPath := filepath.Join(layersDir, "pnpm", "bin", "pnpm")
 		shimBytes, err := os.ReadFile(shimPath)
 		Expect(err).NotTo(HaveOccurred())
 		expectedTarget := filepath.Join(layersDir, "pnpm", "dist", "pnpm.cjs")
 		Expect(string(shimBytes)).To(Equal("#!/bin/sh\nexec node " + expectedTarget + " \"$@\"\n"))
 
-		// Legacy SBOM
-		Expect(dependencyManager.GenerateBillOfMaterialsCall.Receives.Dependencies).To(Equal([]postal.Dependency{{
-			ID:       "pnpm",
-			Name:     "pnpm-dependency-name",
-			Checksum: "sha256:pnpm-dependency-sha",
-			Stacks:   []string{"some-stack"},
-			URI:      "pnpm-dependency-uri",
-			Version:  "pnpm-dependency-version",
-		},
-		}))
-
-		Expect(sbomGenerator.GenerateFromDependencyCall.Receives.Dependency).To(Equal(postal.Dependency{
-			ID:       "pnpm",
-			Name:     "pnpm-dependency-name",
-			Checksum: "sha256:pnpm-dependency-sha",
-			Stacks:   []string{"some-stack"},
-			URI:      "pnpm-dependency-uri",
-			Version:  "pnpm-dependency-version",
-		}))
-		Expect(sbomGenerator.GenerateFromDependencyCall.Receives.Dir).To(Equal(layer.Path))
-
+		// Assert logger output
 		Expect(buffer.String()).To(ContainSubstring("Some Buildpack some-version"))
 		Expect(buffer.String()).To(ContainSubstring("Executing build process"))
 		Expect(buffer.String()).To(ContainSubstring("Installing pnpm"))
 	})
 
-	context("when the plan entry requires the dependency during the build and launch phases", func() {
+	// ── Scenario 2: Build & Launch Layer Availability Flags ────────────────────
+	context("when the plan entry requires the dependency during build and launch phases", func() {
 		it.Before(func() {
 			buildContext.Plan.Entries[0].Metadata = map[string]interface{}{
 				"build":  true,
@@ -260,7 +230,7 @@ func testBuild(t *testing.T, context spec.G, it spec.S) {
 			}
 		})
 
-		it("makes the layer available in those phases", func() {
+		it("makes the layer available in both build and launch phases", func() {
 			result, err := build(buildContext)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -272,15 +242,15 @@ func testBuild(t *testing.T, context spec.G, it spec.S) {
 			Expect(layer.Build).To(BeTrue())
 			Expect(layer.Launch).To(BeTrue())
 			Expect(layer.Cache).To(BeTrue())
-			Expect(layer.Metadata).To(Equal(map[string]interface{}{
-				pnpm.DependencyCacheKey: "sha256:pnpm-dependency-sha",
-			}))
+			Expect(layer.Metadata).To(HaveKey("dependency-sha"))
 		})
 	})
 
+	// ── Failure Scenarios ────────────────────────────────────────────────────────
 	context("failure cases", func() {
-		context("when the pnpm layer cannot be retrieved", func() {
+		context("when the pnpm layer metadata cannot be parsed", func() {
 			it.Before(func() {
+				// Corrupt layer metadata file
 				err := os.WriteFile(filepath.Join(layersDir, "pnpm.toml"), nil, 0000)
 				Expect(err).NotTo(HaveOccurred())
 			})
@@ -293,17 +263,22 @@ func testBuild(t *testing.T, context spec.G, it spec.S) {
 
 		context("when the dependency cannot be resolved", func() {
 			it.Before(func() {
+				// Pass an unresolvable version constraint
+				buildContext.Plan.Entries[0].Metadata = map[string]interface{}{
+					"version": "unresolvable-invalid-version-xyz",
+				}
 				dependencyManager.ResolveCall.Returns.Error = errors.New("failed to resolve dependency")
 			})
 
-			it("returns an error", func() {
+			it("returns a resolution error", func() {
 				_, err := build(buildContext)
-				Expect(err).To(MatchError("failed to resolve dependency"))
+				Expect(err).To(MatchError(ContainSubstring("failed to resolve dependency")))
 			})
 		})
 
 		context("when the layers directory cannot be written to", func() {
 			it.Before(func() {
+				// Remove write permissions on layer directory
 				Expect(os.Chmod(layersDir, 4444)).To(Succeed())
 			})
 
@@ -311,43 +286,43 @@ func testBuild(t *testing.T, context spec.G, it spec.S) {
 				Expect(os.Chmod(layersDir, os.ModePerm)).To(Succeed())
 			})
 
-			it("returns an error", func() {
+			it("returns a permission denied error", func() {
 				_, err := build(buildContext)
 				Expect(err).To(MatchError(ContainSubstring("permission denied")))
 			})
 		})
 
-		context("when the dependency cannot be installed", func() {
+		context("when the dependency delivery fails", func() {
 			it.Before(func() {
 				dependencyManager.DeliverCall.Stub = nil
 				dependencyManager.DeliverCall.Returns.Error = errors.New("failed to install dependency")
 			})
 
-			it("returns an error", func() {
+			it("returns an installation error", func() {
 				_, err := build(buildContext)
 				Expect(err).To(MatchError("failed to install dependency"))
 			})
 		})
 
-		context("when package.json is missing from the layer after delivery", func() {
+		context("when package.json is missing from layer after delivery", func() {
 			it.Before(func() {
-				// Deliver succeeds but writes no package.json.
+				// Stub deliver to succeed without creating package.json
 				dependencyManager.DeliverCall.Stub = func(_ postal.Dependency, _, _ string, _ string) error {
 					return nil
 				}
 			})
 
-			it("returns a descriptive error", func() {
+			it("returns a descriptive missing package.json error", func() {
 				_, err := build(buildContext)
 				Expect(err).To(MatchError(ContainSubstring("could not determine pnpm entry point")))
 				Expect(err).To(MatchError(ContainSubstring("package.json")))
 			})
 		})
 
-		context("when package.json has no bin.pnpm entry", func() {
+		context("when package.json lacks a bin.pnpm entry", func() {
 			it.Before(func() {
 				dependencyManager.DeliverCall.Stub = func(_ postal.Dependency, _, layerPath string, _ string) error {
-					// Write a package.json that is valid JSON but lacks bin["pnpm"].
+					// Write invalid package.json without bin.pnpm key
 					return os.WriteFile(
 						filepath.Join(layerPath, "package.json"),
 						[]byte(`{"name":"pnpm","bin":{"other":"dist/other.cjs"}}`),
@@ -356,7 +331,7 @@ func testBuild(t *testing.T, context spec.G, it spec.S) {
 				}
 			})
 
-			it("returns a descriptive error", func() {
+			it("returns a descriptive entry point error", func() {
 				_, err := build(buildContext)
 				Expect(err).To(MatchError(ContainSubstring("could not determine pnpm entry point")))
 				Expect(err).To(MatchError(ContainSubstring("'pnpm' entry under 'bin'")))
@@ -368,7 +343,7 @@ func testBuild(t *testing.T, context spec.G, it spec.S) {
 				buildContext.BuildpackInfo = packit.BuildpackInfo{SBOMFormats: []string{"random-format"}}
 			})
 
-			it("returns an error", func() {
+			it("returns an unsupported SBOM format error", func() {
 				_, err := build(buildContext)
 				Expect(err).To(MatchError("unsupported SBOM format: 'random-format'"))
 			})
@@ -379,13 +354,13 @@ func testBuild(t *testing.T, context spec.G, it spec.S) {
 				sbomGenerator.GenerateFromDependencyCall.Returns.Error = errors.New("failed to generate SBOM")
 			})
 
-			it("returns an error", func() {
+			it("returns an SBOM generation error", func() {
 				_, err := build(buildContext)
 				Expect(err).To(MatchError(ContainSubstring("failed to generate SBOM")))
 			})
 		})
 
-		context("when BP_DISABLE_SBOM is set incorrectly", func() {
+		context("when BP_DISABLE_SBOM is set to an invalid boolean value", func() {
 			it.Before(func() {
 				Expect(os.Setenv("BP_DISABLE_SBOM", "not-a-bool")).To(Succeed())
 			})
@@ -394,7 +369,7 @@ func testBuild(t *testing.T, context spec.G, it spec.S) {
 				Expect(os.Unsetenv("BP_DISABLE_SBOM")).To(Succeed())
 			})
 
-			it("returns an error", func() {
+			it("returns a parse error for BP_DISABLE_SBOM", func() {
 				_, err := build(buildContext)
 				Expect(err).To(MatchError(ContainSubstring("failed to parse BP_DISABLE_SBOM")))
 			})

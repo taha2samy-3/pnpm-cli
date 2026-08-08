@@ -16,13 +16,13 @@ import (
 //go:embed dependencies.json
 var embeddedDependenciesJSON []byte
 
-// pnpmDependencyEntry represents the minimal version structure read from embedded JSON.
+// pnpmDependencyEntry represents the minimal version structure read from embedded dependencies JSON.
 type pnpmDependencyEntry struct {
 	ID      string `json:"id"`
 	Version string `json:"version"`
 }
 
-// detectPackageJSON represents the minimal structural subset of package.json.
+// detectPackageJSON represents the minimal structural subset of package.json to parse packageManager.
 type detectPackageJSON struct {
 	PackageManager string `json:"packageManager"`
 }
@@ -66,7 +66,7 @@ func loadAllVersions() []*semver.Version {
 	return versions
 }
 
-// findHighestInMajor returns the highest version string available in embedded JSON for a Major family.
+// findHighestInMajor searches embedded JSON and returns the highest version string for a specific Major family (e.g. Major 9 -> 9.15.9).
 func findHighestInMajor(major uint64, versions []*semver.Version) string {
 	var highest *semver.Version
 	for _, sv := range versions {
@@ -82,33 +82,35 @@ func findHighestInMajor(major uint64, versions []*semver.Version) string {
 	return ""
 }
 
-// resolveVersion dynamically matches requested version against the hundreds of versions in JSON:
-// 1. Checks exact match.
-// 2. Fallbacks to highest version in same Major family.
-// 3. Evaluates semver constraints (e.g. "9.*", ">=10").
-func resolveVersion(requested string, versions []*semver.Version) string {
-	cleanReq := strings.TrimPrefix(requested, "pnpm@")
-	cleanReq = strings.TrimSpace(cleanReq)
-	if cleanReq == "" {
-		return ""
+// sanitizePattern normalizes user version inputs, strips prefixes, and fixes incomplete trailing dots (e.g., "pnpm@v9." -> "9.*").
+func sanitizePattern(requested string) string {
+	clean := strings.TrimPrefix(requested, "pnpm@")
+	clean = strings.TrimPrefix(clean, "v")
+	clean = strings.TrimSpace(clean)
+
+	if clean == "" || clean == "default" {
+		return "*"
 	}
 
-	// 1. Check Exact Match
+	if strings.HasSuffix(clean, ".") {
+		clean = clean + "*"
+	}
+
+	return clean
+}
+
+// resolveVersion resolves requested version/pattern against embedded JSON following exact match -> semver constraint -> major family fallback
+func resolveVersion(requested string, versions []*semver.Version) string {
+	cleanReq := sanitizePattern(requested)
+
+	// Step 1: Check for Exact Version Match (e.g., "9.15.9")
 	for _, sv := range versions {
 		if sv.String() == cleanReq || sv.Original() == cleanReq {
 			return cleanReq
 		}
 	}
 
-	// 2. Fallback to Highest in Same Major Family
-	if reqSv, err := semver.NewVersion(cleanReq); err == nil {
-		bestInMajor := findHighestInMajor(reqSv.Major(), versions)
-		if bestInMajor != "" {
-			return bestInMajor
-		}
-	}
-
-	// 3. Semver Constraint Evaluation
+	// Step 2: Semver Pattern & Constraint Evaluation (Supports: "9", "9.x", "9.1.*", "^9.1.0", "~9.1.0")
 	if constraint, err := semver.NewConstraint(cleanReq); err == nil {
 		var highestMatch *semver.Version
 		for _, sv := range versions {
@@ -120,6 +122,14 @@ func resolveVersion(requested string, versions []*semver.Version) string {
 		}
 		if highestMatch != nil {
 			return highestMatch.String()
+		}
+	}
+
+	// Step 3: Fallback to Highest in Same Major Family if requested purely as a major integer (e.g., "9")
+	if majorUint, err := strconv.ParseUint(cleanReq, 10, 64); err == nil {
+		bestInMajor := findHighestInMajor(majorUint, versions)
+		if bestInMajor != "" {
+			return bestInMajor
 		}
 	}
 
@@ -155,7 +165,7 @@ func Detect() packit.DetectFunc {
 		var requirements []packit.BuildPlanRequirement
 		allVersions := loadAllVersions()
 
-		// Priority 1: Check for explicit environment variable override
+		// Priority 1: Check for explicit environment variable override (BP_PNPM_VERSION)
 		if envVersion := os.Getenv("BP_PNPM_VERSION"); envVersion != "" {
 			resolvedVersion := resolveVersion(envVersion, allVersions)
 			requirements = append(requirements, packit.BuildPlanRequirement{
@@ -209,19 +219,29 @@ func Detect() packit.DetectFunc {
 			}
 		}
 
-		// Priority 4: Default Fallback dynamically to absolute latest version in JSON
+		// Priority 4: Default Fallback -> يختار أوتوماتيكياً أعلى إصدار في فئة 9 (فئة الـ Default المعتمدة)
 		if len(requirements) == 0 && len(allVersions) > 0 {
-			var latest *semver.Version
-			for _, sv := range allVersions {
-				if latest == nil || sv.GreaterThan(latest) {
-					latest = sv
+			resolvedVersion := findHighestInMajor(9, allVersions)
+			if resolvedVersion == "" {
+				// Fallback to highest stable if Major 9 is missing
+				var latest *semver.Version
+				for _, sv := range allVersions {
+					if sv.Prerelease() == "" {
+						if latest == nil || sv.GreaterThan(latest) {
+							latest = sv
+						}
+					}
+				}
+				if latest != nil {
+					resolvedVersion = latest.String()
 				}
 			}
-			if latest != nil {
+
+			if resolvedVersion != "" {
 				requirements = append(requirements, packit.BuildPlanRequirement{
 					Name: PNPMDependency,
 					Metadata: map[string]interface{}{
-						"version":        latest.String(),
+						"version":        resolvedVersion,
 						"version-source": "default",
 					},
 				})

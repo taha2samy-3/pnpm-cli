@@ -12,9 +12,57 @@ api = "0.7"
     uri = "https://github.com/paketo-buildpacks/pnpm/blob/main/LICENSE"
 
 [metadata]
-  include-files = ["buildpack.toml", "bin/build", "bin/detect", "bin/run"]
+  include-files = ["buildpack.toml", "dependencies.json", "bin/build", "bin/detect", "bin/run"]
   [metadata.default-versions]
-    pnpm = "9.*"
+    pnpm = "11.*"
+
+[[metadata.dependencies]]
+  arch = "amd64"
+  checksum = "sha256:34e198cb1e43237517ecedfd31f9ae26a6c0a3e5366ce58a2d05f4b21fb5f19a"
+  cpe = "cpe:2.3:a:pnpm:pnpm:11.20.0:*:*:*:*:*:*:*"
+  id = "pnpm"
+  licenses = ["MIT"]
+  name = "pnpm"
+  os = "linux"
+  purl = "pkg:generic/pnpm@11.20.0?checksum=34e198cb1e43237517ecedfd31f9ae26a6c0a3e5366ce58a2d05f4b21fb5f19a&download_url=https://registry.npmjs.org/pnpm/-/pnpm-11.20.0.tgz"
+  source = "https://registry.npmjs.org/pnpm/-/pnpm-11.20.0.tgz"
+  source_checksum = "sha256:34e198cb1e43237517ecedfd31f9ae26a6c0a3e5366ce58a2d05f4b21fb5f19a"
+  stacks = ["io.buildpacks.stacks.bionic", "io.buildpacks.stacks.jammy", "*"]
+  strip-components = 1
+  uri = "https://registry.npmjs.org/pnpm/-/pnpm-11.20.0.tgz"
+  version = "11.20.0"
+
+[[metadata.dependencies]]
+  arch = "amd64"
+  checksum = "sha256:ccb5c479cab1b00621325bfe7d4c9a8a8031e7a525d7249e275ecbec81b08db2"
+  cpe = "cpe:2.3:a:pnpm:pnpm:10.34.5:*:*:*:*:*:*:*"
+  id = "pnpm"
+  licenses = ["MIT"]
+  name = "pnpm"
+  os = "linux"
+  purl = "pkg:generic/pnpm@10.34.5?checksum=ccb5c479cab1b00621325bfe7d4c9a8a8031e7a525d7249e275ecbec81b08db2&download_url=https://registry.npmjs.org/pnpm/-/pnpm-10.34.5.tgz"
+  source = "https://registry.npmjs.org/pnpm/-/pnpm-10.34.5.tgz"
+  source_checksum = "sha256:ccb5c479cab1b00621325bfe7d4c9a8a8031e7a525d7249e275ecbec81b08db2"
+  stacks = ["io.buildpacks.stacks.bionic", "io.buildpacks.stacks.jammy", "*"]
+  strip-components = 1
+  uri = "https://registry.npmjs.org/pnpm/-/pnpm-10.34.5.tgz"
+  version = "10.34.5"
+
+[[metadata.dependencies]]
+  arch = "amd64"
+  checksum = "sha256:cf86a7ad764406395d4286a6d09d730711720acc6d93e9dce9ac7ac4dc4a28a7"
+  cpe = "cpe:2.3:a:pnpm:pnpm:9.15.9:*:*:*:*:*:*:*"
+  id = "pnpm"
+  licenses = ["MIT"]
+  name = "pnpm"
+  os = "linux"
+  purl = "pkg:generic/pnpm@9.15.9?checksum=cf86a7ad764406395d4286a6d09d730711720acc6d93e9dce9ac7ac4dc4a28a7&download_url=https://registry.npmjs.org/pnpm/-/pnpm-9.15.9.tgz"
+  source = "https://registry.npmjs.org/pnpm/-/pnpm-9.15.9.tgz"
+  source_checksum = "sha256:cf86a7ad764406395d4286a6d09d730711720acc6d93e9dce9ac7ac4dc4a28a7"
+  stacks = ["io.buildpacks.stacks.bionic", "io.buildpacks.stacks.jammy", "*"]
+  strip-components = 1
+  uri = "https://registry.npmjs.org/pnpm/-/pnpm-9.15.9.tgz"
+  version = "9.15.9"
 
 [[stacks]]
   id = "io.buildpacks.stacks.bionic"

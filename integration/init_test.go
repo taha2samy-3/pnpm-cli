@@ -74,13 +74,13 @@ func TestIntegration(t *testing.T) {
 	}
 
 	settings.Buildpacks.PNPM.Online, err = buildpackStore.Get.
-		WithVersion("1.2.3").
+		WithVersion("0.0.1").
 		Execute(root)
 	Expect(err).NotTo(HaveOccurred())
 
 	settings.Buildpacks.PNPM.Offline, err = buildpackStore.Get.
 		WithOfflineDependencies().
-		WithVersion("1.2.3").
+		WithVersion("0.0.1").
 		Execute(root)
 	Expect(err).NotTo(HaveOccurred())
 
